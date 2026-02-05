@@ -795,20 +795,27 @@ impl Backend for NativeBackend {
         for cert in &certs {
             let mut pqc_keys = Vec::new();
             let mut classic_keys = Vec::new();
-            for key in cert
-                .keys()
-                .with_policy(&policy, None)
-                .supported()
-                .alive()
-                .revoked(false)
-                .for_transport_encryption()
-            {
-                if is_pqc_kem_algo(key.key().pk_algo()) {
-                    pqc_keys.push(key);
-                } else {
-                    classic_keys.push(key);
+        for key in cert
+            .keys()
+            .with_policy(&policy, None)
+            .supported()
+            .alive()
+            .revoked(false)
+            .for_transport_encryption()
+        {
+            let algo = key.key().pk_algo();
+            let version = key.key().version();
+            if is_pqc_kem_algo(algo) && pqc_kem_key_version_ok(algo, version) {
+                pqc_keys.push(key);
+            } else {
+                if is_pqc_kem_algo(algo) && std::env::var_os("ENCRYPTO_DEBUG").is_some() {
+                    eprintln!(
+                        "pqc: ignoring encryption key with unsupported version v{version} ({algo:?})"
+                    );
                 }
+                classic_keys.push(key);
             }
+        }
 
             if req.compat && !matches!(req.pqc_policy, PqcPolicy::Disabled) {
                 if matches!(req.pqc_policy, PqcPolicy::Required) && pqc_keys.is_empty() {
@@ -931,9 +938,16 @@ impl Backend for NativeBackend {
             .revoked(false)
             .for_signing()
         {
-            if is_pqc_sign_algo(key.key().pk_algo()) {
+            let algo = key.key().pk_algo();
+            let version = key.key().version();
+            if is_pqc_sign_algo(algo) && pqc_sign_key_version_ok(version) {
                 pqc_keys.push(key);
             } else {
+                if is_pqc_sign_algo(algo) && std::env::var_os("ENCRYPTO_DEBUG").is_some() {
+                    eprintln!(
+                        "pqc: ignoring signing key with unsupported version v{version} ({algo:?})"
+                    );
+                }
                 classic_keys.push(key);
             }
         }
@@ -1176,7 +1190,11 @@ fn cert_has_pqc_encryption_key(cert: &Cert) -> bool {
         .alive()
         .revoked(false)
         .for_transport_encryption()
-        .any(|key| is_pqc_kem_algo(key.key().pk_algo()))
+        .any(|key| {
+            let algo = key.key().pk_algo();
+            let version = key.key().version();
+            is_pqc_kem_algo(algo) && pqc_kem_key_version_ok(algo, version)
+        })
 }
 
 fn cert_has_pqc_signing_key(cert: &Cert) -> bool {
@@ -1187,7 +1205,11 @@ fn cert_has_pqc_signing_key(cert: &Cert) -> bool {
         .alive()
         .revoked(false)
         .for_signing()
-        .any(|key| is_pqc_sign_algo(key.key().pk_algo()))
+        .any(|key| {
+            let algo = key.key().pk_algo();
+            let version = key.key().version();
+            is_pqc_sign_algo(algo) && pqc_sign_key_version_ok(version)
+        })
 }
 
 fn is_pqc_sign_algo(algo: PublicKeyAlgorithm) -> bool {
@@ -1206,6 +1228,18 @@ fn is_pqc_kem_algo(algo: PublicKeyAlgorithm) -> bool {
         algo,
         PublicKeyAlgorithm::MLKEM768_X25519 | PublicKeyAlgorithm::MLKEM1024_X448
     )
+}
+
+fn pqc_sign_key_version_ok(version: u8) -> bool {
+    version >= 6
+}
+
+fn pqc_kem_key_version_ok(algo: PublicKeyAlgorithm, version: u8) -> bool {
+    match algo {
+        PublicKeyAlgorithm::MLKEM768_X25519 => version >= 4,
+        PublicKeyAlgorithm::MLKEM1024_X448 => version >= 6,
+        _ => false,
+    }
 }
 
 fn hash_is_pqc_ok(hash: HashAlgorithm) -> bool {
@@ -1273,6 +1307,12 @@ fn ensure_pqc_signature_output(bytes: &[u8]) -> Result<(), EncryptoError> {
                 return Err(EncryptoError::Backend(format!(
                     "PQC required but non-PQC signature found: {:?}",
                     algo
+                )));
+            }
+            if sig.version() < 6 {
+                return Err(EncryptoError::Backend(format!(
+                    "PQC required but signature version is v{}",
+                    sig.version()
                 )));
             }
             if !hash_is_pqc_ok(sig.hash_algo()) {

@@ -21,6 +21,7 @@ We align with the draft’s composite (hybrid) algorithms and IDs:
 ## Key Versions
 - PQC operations are v6 keys by default (RFC 9580 profile).
 - The draft allows ML-KEM-768+X25519 in v4 encryption subkeys; we accept that for interop, but still enforce PQC policy at the artifact level.
+- PQC signatures require v6 signatures; non-v6 PQC signatures are rejected.
 
 ## Policy
 - `PQC required` is the default.
