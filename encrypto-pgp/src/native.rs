@@ -986,10 +986,7 @@ impl VerificationHelper for NativeHelper {
                     matched = true;
                     break;
                 }
-                if cert
-                    .keys()
-                    .any(|key| key.key().fingerprint().aliases(id))
-                {
+                if cert.keys().any(|key| key.key().fingerprint().aliases(id)) {
                     matched = true;
                     break;
                 }
