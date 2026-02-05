@@ -10,6 +10,8 @@ We follow the draft’s post-quantum OpenPGP profile:
 - PQC required by default; outputs are validated to avoid classical fallbacks.
 - `--compat` explicitly allows mixed PQC + classical recipients with a warning.
 
+See `SPEC.md` for the implementation profile and policy details.
+
 Nobody wants to give enough time to build a post quantum pgp. so i did.
 
 ## Run
