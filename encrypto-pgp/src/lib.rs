@@ -663,7 +663,7 @@ impl NativeBackend {
 
 impl Default for NativeBackend {
     fn default() -> Self {
-        Self::new(PqcPolicy::Preferred)
+        Self::new(PqcPolicy::Required)
     }
 }
 

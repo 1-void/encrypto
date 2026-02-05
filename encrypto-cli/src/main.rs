@@ -27,11 +27,11 @@ struct Cli {
     #[arg(long, conflicts_with = "backend")]
     gpg: bool,
 
-    #[arg(long, value_enum, default_value_t = PqcMode::Preferred)]
+    #[arg(long, value_enum, default_value_t = PqcMode::Required)]
     pqc: PqcMode,
 
-    #[arg(long = "pqc-required", short = 'Q', conflicts_with = "pqc")]
-    pqc_required: bool,
+    #[arg(long = "pqc-disabled", conflicts_with = "pqc")]
+    pqc_disabled: bool,
 
     #[arg(long = "gpg-path", global = true, default_value = "gpg")]
     gpg_path: String,
@@ -191,8 +191,9 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut pqc_policy: PqcPolicy = cli.pqc.into();
-    if cli.pqc_required {
-        pqc_policy = PqcPolicy::Required;
+    if cli.pqc_disabled {
+        pqc_policy = PqcPolicy::Disabled;
+        eprintln!("warning: PQC disabled; outputs may be vulnerable to quantum attacks");
     }
 
     let mut backend_kind = cli.backend;

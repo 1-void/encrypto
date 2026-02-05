@@ -9,7 +9,7 @@ pub enum PqcPolicy {
 
 impl Default for PqcPolicy {
     fn default() -> Self {
-        PqcPolicy::Preferred
+        PqcPolicy::Required
     }
 }
 
