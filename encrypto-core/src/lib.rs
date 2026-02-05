@@ -48,6 +48,7 @@ pub struct KeyGenParams {
     pub pqc_policy: PqcPolicy,
     pub pqc_level: PqcLevel,
     pub passphrase: Option<String>,
+    pub allow_unprotected: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +85,45 @@ pub struct VerifyRequest {
 pub struct VerifyResult {
     pub valid: bool,
     pub signer: Option<KeyId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevocationReason {
+    Unspecified,
+    KeyCompromised,
+    KeySuperseded,
+    KeyRetired,
+    UserIdInvalid,
+}
+
+#[derive(Debug, Clone)]
+pub struct RevokeRequest {
+    pub key_id: KeyId,
+    pub reason: RevocationReason,
+    pub message: Option<String>,
+    pub armor: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RevokeResult {
+    pub updated_cert: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RotateRequest {
+    pub key_id: KeyId,
+    pub new_user_id: Option<UserId>,
+    pub pqc_policy: PqcPolicy,
+    pub pqc_level: PqcLevel,
+    pub passphrase: Option<String>,
+    pub allow_unprotected: bool,
+    pub revoke_old: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RotateResult {
+    pub new_key: KeyMeta,
+    pub old_key_revoked: bool,
 }
 
 #[derive(Debug)]
@@ -127,4 +167,7 @@ pub trait Backend {
 
     fn sign(&self, req: SignRequest) -> Result<Vec<u8>, EncryptoError>;
     fn verify(&self, req: VerifyRequest) -> Result<VerifyResult, EncryptoError>;
+
+    fn revoke_key(&self, req: RevokeRequest) -> Result<RevokeResult, EncryptoError>;
+    fn rotate_key(&self, req: RotateRequest) -> Result<RotateResult, EncryptoError>;
 }

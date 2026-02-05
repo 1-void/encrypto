@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
 use encrypto_core::{
     Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, OPENPGP_PQC_DRAFT, PqcLevel,
-    PqcPolicy, SignRequest, UserId, VerifyRequest,
+    PqcPolicy, RevocationReason, RevokeRequest, RotateRequest, SignRequest, UserId, VerifyRequest,
 };
 use encrypto_pgp::{GpgBackend, GpgConfig, NativeBackend, PinentryMode, pqc_algorithms_supported};
 use std::fs;
@@ -89,6 +89,15 @@ enum PqcLevelArg {
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy)]
+enum RevocationReasonArg {
+    Unspecified,
+    KeyCompromised,
+    KeySuperseded,
+    KeyRetired,
+    UserIdInvalid,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
 enum PinentryModeArg {
     Default,
     Ask,
@@ -124,9 +133,22 @@ impl From<PqcLevelArg> for PqcLevel {
     }
 }
 
+impl From<RevocationReasonArg> for RevocationReason {
+    fn from(reason: RevocationReasonArg) -> Self {
+        match reason {
+            RevocationReasonArg::Unspecified => RevocationReason::Unspecified,
+            RevocationReasonArg::KeyCompromised => RevocationReason::KeyCompromised,
+            RevocationReasonArg::KeySuperseded => RevocationReason::KeySuperseded,
+            RevocationReasonArg::KeyRetired => RevocationReason::KeyRetired,
+            RevocationReasonArg::UserIdInvalid => RevocationReason::UserIdInvalid,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
     Info,
+    Doctor,
     #[command(alias = "ls")]
     ListKeys,
     #[command(alias = "gen")]
@@ -136,6 +158,8 @@ enum Command {
         algo: Option<String>,
         #[arg(long, value_enum, default_value_t = PqcLevelArg::Baseline)]
         pqc_level: PqcLevelArg,
+        #[arg(long = "no-passphrase")]
+        no_passphrase: bool,
     },
     Import {
         path: String,
@@ -194,6 +218,28 @@ enum Command {
         sig_file: Option<String>,
         #[arg(value_name = "FILE", index = 2)]
         input_file: Option<String>,
+    },
+    Revoke {
+        key_id: String,
+        #[arg(long, value_enum, default_value_t = RevocationReasonArg::Unspecified)]
+        reason: RevocationReasonArg,
+        #[arg(long)]
+        message: Option<String>,
+        #[arg(short = 'a', long)]
+        armor: bool,
+        #[arg(short = 'o', long, alias = "out")]
+        output: Option<String>,
+    },
+    Rotate {
+        key_id: String,
+        #[arg(long)]
+        user_id: Option<String>,
+        #[arg(long, value_enum, default_value_t = PqcLevelArg::Baseline)]
+        pqc_level: PqcLevelArg,
+        #[arg(long = "no-passphrase")]
+        no_passphrase: bool,
+        #[arg(long = "no-revoke")]
+        no_revoke: bool,
     },
 }
 
@@ -286,6 +332,23 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Doctor => {
+            println!("backend: {}", backend.name());
+            println!("pqc policy: {}", format_policy(&pqc_policy));
+            println!("openpgp pqc draft: {OPENPGP_PQC_DRAFT}");
+            println!("pqc supported: {}", backend.supports_pqc());
+            if backend.name() == "native" {
+                for (name, supported) in pqc_algorithms_supported() {
+                    println!("pqc algo {name}: {supported}");
+                }
+            }
+            print_env("ENCRYPTO_HOME");
+            print_env("ENCRYPTO_OPENSSL_CONF");
+            print_env("OPENSSL_CONF");
+            print_env("OPENSSL_MODULES");
+            print_env("LD_LIBRARY_PATH");
+            Ok(())
+        }
         Command::ListKeys => {
             let keys = backend.list_keys()?;
             if keys.is_empty() {
@@ -307,13 +370,23 @@ fn main() -> Result<()> {
             user_id,
             algo,
             pqc_level,
+            no_passphrase,
         } => {
+            if backend.name() == "native" && native_passphrase.is_none() && !no_passphrase {
+                return Err(anyhow!(
+                    "passphrase required for native keygen; use --passphrase/--passphrase-file or --no-passphrase"
+                ));
+            }
+            if backend.name() != "native" && no_passphrase {
+                eprintln!("warning: --no-passphrase only applies to the native backend");
+            }
             let params = KeyGenParams {
                 user_id: UserId(user_id),
                 algo,
                 pqc_policy: pqc_policy.clone(),
                 pqc_level: pqc_level.into(),
                 passphrase: native_passphrase.clone(),
+                allow_unprotected: no_passphrase,
             };
             let meta = backend.generate_key(params)?;
             println!("created key: {}", meta.key_id.0);
@@ -417,6 +490,55 @@ fn main() -> Result<()> {
                 Err(anyhow!("invalid signature"))
             }
         }
+        Command::Revoke {
+            key_id,
+            reason,
+            message,
+            armor,
+            output,
+        } => {
+            let result = backend.revoke_key(RevokeRequest {
+                key_id: KeyId(key_id),
+                reason: reason.into(),
+                message,
+                armor,
+            })?;
+            if let Some(path) = output {
+                write_output(Some(path), &result.updated_cert)?;
+            }
+            println!("revoked key");
+            Ok(())
+        }
+        Command::Rotate {
+            key_id,
+            user_id,
+            pqc_level,
+            no_passphrase,
+            no_revoke,
+        } => {
+            if backend.name() == "native" && native_passphrase.is_none() && !no_passphrase {
+                return Err(anyhow!(
+                    "passphrase required for native rotation; use --passphrase/--passphrase-file or --no-passphrase"
+                ));
+            }
+            if backend.name() != "native" && no_passphrase {
+                eprintln!("warning: --no-passphrase only applies to the native backend");
+            }
+            let result = backend.rotate_key(RotateRequest {
+                key_id: KeyId(key_id),
+                new_user_id: user_id.map(UserId),
+                pqc_policy: pqc_policy.clone(),
+                pqc_level: pqc_level.into(),
+                passphrase: native_passphrase.clone(),
+                allow_unprotected: no_passphrase,
+                revoke_old: !no_revoke,
+            })?;
+            println!("rotated key: {}", result.new_key.key_id.0);
+            if result.old_key_revoked {
+                println!("old key revoked");
+            }
+            Ok(())
+        }
     }
 }
 
@@ -444,6 +566,13 @@ fn read_passphrase_file(path: &str) -> Result<String> {
         passphrase.pop();
     }
     Ok(passphrase)
+}
+
+fn print_env(var: &str) {
+    match std::env::var(var) {
+        Ok(value) if !value.is_empty() => println!("{var}: {value}"),
+        _ => println!("{var}: (not set)"),
+    }
 }
 
 fn write_output(path: Option<String>, bytes: &[u8]) -> Result<()> {

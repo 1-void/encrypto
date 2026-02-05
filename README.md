@@ -31,6 +31,11 @@ Generate a PQC key with a passphrase (native backend):
 cargo run -p encrypto-cli -- --native --passphrase-file ./pass.txt keygen "Alice <alice@example.com>"
 ```
 
+Keygen requires a passphrase by default (native). Use `--no-passphrase` to override:
+```bash
+cargo run -p encrypto-cli -- --native --no-passphrase keygen "Alice <alice@example.com>"
+```
+
 Post-quantum mode (builds OpenSSL locally, then runs with PQC enabled):
 ```bash
 ./scripts/bootstrap-pqc.sh
@@ -48,6 +53,17 @@ cargo run -p encrypto-cli -- --native verify message.sig message.txt
 
 Passphrase note (native backend): prefer `--passphrase-file` to avoid exposing secrets in process listings.
 
+Key lifecycle:
+```bash
+cargo run -p encrypto-cli -- --native revoke <KEY_ID> --reason key-superseded --armor -o revoked.asc
+cargo run -p encrypto-cli -- --native rotate <KEY_ID>
+```
+
+Diagnostics:
+```bash
+cargo run -p encrypto-cli -- --native doctor
+```
+
 Disable PQC (dangerous, for compatibility only):
 ```bash
 cargo run -p encrypto-cli -- --gpg --pqc-disabled list-keys
@@ -61,6 +77,12 @@ cargo run -p encrypto-cli -- --native --compat encrypt -r <KEY_ID> message.txt -
 If you need oqs-provider explicitly:
 ```bash
 PQC_WITH_OQS=1 ./scripts/bootstrap-pqc.sh
+```
+
+Draft vectors (optional):
+```bash
+./scripts/fetch-draft-vectors.sh
+cargo test -p encrypto-pgp --test draft_vectors
 ```
 
 ## Contributing

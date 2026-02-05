@@ -92,6 +92,7 @@ fn pqc_required_outputs_are_pqc() {
             pqc_policy: PqcPolicy::Required,
             pqc_level: PqcLevel::Baseline,
             passphrase: None,
+            allow_unprotected: true,
         })
         .expect("keygen");
 
@@ -134,6 +135,7 @@ fn pqc_roundtrip_import_export() {
             pqc_policy: PqcPolicy::Required,
             pqc_level: PqcLevel::Baseline,
             passphrase: None,
+            allow_unprotected: true,
         })
         .expect("keygen");
 
@@ -201,6 +203,7 @@ fn classical_signature_rejected_when_pqc_required() {
             pqc_policy: PqcPolicy::Disabled,
             pqc_level: PqcLevel::Baseline,
             passphrase: None,
+            allow_unprotected: true,
         })
         .expect("keygen");
 
@@ -235,6 +238,7 @@ fn classical_encryption_rejected_when_pqc_required() {
             pqc_policy: PqcPolicy::Disabled,
             pqc_level: PqcLevel::Baseline,
             passphrase: None,
+            allow_unprotected: true,
         })
         .expect("keygen");
 
@@ -274,6 +278,7 @@ fn native_passphrase_encrypts_secret_keys() {
             pqc_policy: PqcPolicy::Required,
             pqc_level: PqcLevel::Baseline,
             passphrase: Some(passphrase.to_string()),
+            allow_unprotected: false,
         })
         .expect("keygen");
 
@@ -316,4 +321,24 @@ fn native_passphrase_encrypts_secret_keys() {
         pqc_policy: PqcPolicy::Required,
     });
     assert!(sign_without.is_err(), "expected passphrase error");
+}
+
+#[test]
+fn keygen_requires_passphrase_by_default() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !backend.supports_pqc() {
+        eprintln!("pqc not supported in this environment; skipping");
+        return;
+    }
+
+    let result = backend.generate_key(KeyGenParams {
+        user_id: UserId("NoPass <nopass@example.com>".to_string()),
+        algo: None,
+        pqc_policy: PqcPolicy::Required,
+        pqc_level: PqcLevel::Baseline,
+        passphrase: None,
+        allow_unprotected: false,
+    });
+    assert!(result.is_err(), "expected keygen to require passphrase");
 }

@@ -1,3 +1,4 @@
 .pqc/
 target/
 scripts/pqc-env.sh
+encrypto-pgp/tests/vectors/

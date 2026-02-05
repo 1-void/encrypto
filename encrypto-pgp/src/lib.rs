@@ -1,6 +1,7 @@
 use encrypto_core::{
     Backend, DecryptRequest, EncryptRequest, EncryptoError, KeyGenParams, KeyId, KeyMeta, PqcLevel,
-    PqcPolicy, SignRequest, UserId, VerifyRequest, VerifyResult,
+    PqcPolicy, RevocationReason, RevokeRequest, RevokeResult, RotateRequest, RotateResult,
+    SignRequest, UserId, VerifyRequest, VerifyResult,
 };
 use encrypto_policy::{
     cert_has_pqc_encryption_key, cert_has_pqc_signing_key, ensure_pqc_encryption_has_pqc,
@@ -28,6 +29,7 @@ use openpgp::parse::stream::{
 use openpgp::policy::StandardPolicy;
 use openpgp::serialize::stream::{Armorer, Encryptor, LiteralWriter, Message, Signer};
 use openpgp::serialize::{Serialize, SerializeInto};
+use openpgp::types::ReasonForRevocation;
 use openpgp::types::{PublicKeyAlgorithm, SymmetricAlgorithm};
 use openpgp::{Cert, KeyHandle, KeyID, Profile};
 use sequoia_openpgp as openpgp;
@@ -416,6 +418,18 @@ impl Backend for GpgBackend {
             signer: Self::parse_verify_status(&output.stdout),
         })
     }
+
+    fn revoke_key(&self, _req: RevokeRequest) -> Result<RevokeResult, EncryptoError> {
+        Err(EncryptoError::not_implemented(
+            "revocation is not implemented for the gpg backend",
+        ))
+    }
+
+    fn rotate_key(&self, _req: RotateRequest) -> Result<RotateResult, EncryptoError> {
+        Err(EncryptoError::not_implemented(
+            "rotation is not implemented for the gpg backend",
+        ))
+    }
 }
 
 #[derive(Clone)]
@@ -743,6 +757,11 @@ impl Backend for NativeBackend {
             .passphrase
             .map(Password::from)
             .or_else(|| self.passphrase.clone());
+        if password.is_none() && !params.allow_unprotected {
+            return Err(EncryptoError::InvalidInput(
+                "passphrase required; use --no-passphrase to override".to_string(),
+            ));
+        }
         if password.is_some() {
             builder = builder.set_password(password);
         }
@@ -1064,6 +1083,95 @@ impl Backend for NativeBackend {
             signer: None,
         })
     }
+
+    fn revoke_key(&self, req: RevokeRequest) -> Result<RevokeResult, EncryptoError> {
+        let cert = self.find_cert(&req.key_id, true)?;
+        if !cert.is_tsk() {
+            return Err(EncryptoError::InvalidInput(
+                "secret key not available for revocation".to_string(),
+            ));
+        }
+
+        let mut key = cert
+            .primary_key()
+            .key()
+            .clone()
+            .parts_into_secret()
+            .map_err(|err| EncryptoError::Backend(format!("secret key load failed: {err}")))?;
+        if key.secret().is_encrypted() {
+            let passphrase = self.passphrase.as_ref().ok_or_else(|| {
+                EncryptoError::InvalidInput(
+                    "secret key is encrypted; passphrase required".to_string(),
+                )
+            })?;
+            key = key
+                .decrypt_secret(passphrase)
+                .map_err(|err| EncryptoError::InvalidInput(format!("key decrypt failed: {err}")))?;
+        }
+        let mut keypair = key
+            .into_keypair()
+            .map_err(|err| EncryptoError::Backend(format!("keypair failed: {err}")))?;
+
+        let reason = map_revocation_reason(req.reason);
+        let message = req
+            .message
+            .unwrap_or_else(|| "revoked by encrypto".to_string());
+        let rev = cert
+            .revoke(&mut keypair, reason, message.as_bytes())
+            .map_err(|err| EncryptoError::Backend(format!("revocation failed: {err}")))?;
+        let (revoked_cert, _) = cert
+            .clone()
+            .insert_packets(rev)
+            .map_err(|err| EncryptoError::Backend(format!("revocation insert failed: {err}")))?;
+
+        self.store_cert(&revoked_cert, true)?;
+        self.store_cert(&revoked_cert, false)?;
+
+        let updated = self.export_cert_bytes(&revoked_cert, false, req.armor)?;
+        Ok(RevokeResult {
+            updated_cert: updated,
+        })
+    }
+
+    fn rotate_key(&self, req: RotateRequest) -> Result<RotateResult, EncryptoError> {
+        let cert = self.find_cert(&req.key_id, false)?;
+        let user_id = match req.new_user_id {
+            Some(uid) => uid,
+            None => cert
+                .userids()
+                .next()
+                .map(|u| UserId(u.userid().to_string()))
+                .ok_or_else(|| {
+                    EncryptoError::InvalidInput("cannot rotate key without a user id".to_string())
+                })?,
+        };
+
+        let params = KeyGenParams {
+            user_id,
+            algo: None,
+            pqc_policy: req.pqc_policy,
+            pqc_level: req.pqc_level,
+            passphrase: req.passphrase.clone(),
+            allow_unprotected: req.allow_unprotected,
+        };
+        let new_key = self.generate_key(params)?;
+
+        let mut revoked = false;
+        if req.revoke_old {
+            let _ = self.revoke_key(RevokeRequest {
+                key_id: req.key_id,
+                reason: RevocationReason::KeySuperseded,
+                message: Some("superseded by key rotation".to_string()),
+                armor: false,
+            })?;
+            revoked = true;
+        }
+
+        Ok(RotateResult {
+            new_key,
+            old_key_revoked: revoked,
+        })
+    }
 }
 
 struct NativeHelper {
@@ -1222,6 +1330,16 @@ fn normalize_id(input: &str) -> String {
 
 fn policy_error(err: encrypto_policy::PolicyError) -> EncryptoError {
     EncryptoError::Backend(err.to_string())
+}
+
+fn map_revocation_reason(reason: RevocationReason) -> ReasonForRevocation {
+    match reason {
+        RevocationReason::Unspecified => ReasonForRevocation::Unspecified,
+        RevocationReason::KeyCompromised => ReasonForRevocation::KeyCompromised,
+        RevocationReason::KeySuperseded => ReasonForRevocation::KeySuperseded,
+        RevocationReason::KeyRetired => ReasonForRevocation::KeyRetired,
+        RevocationReason::UserIdInvalid => ReasonForRevocation::UIDRetired,
+    }
 }
 
 fn cert_matches(cert: &Cert, needle_hex: &str, needle_raw: &str) -> bool {
