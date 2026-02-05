@@ -27,4 +27,5 @@ jobs:
         cargo fmt --check
         cargo clippy --workspace --all-targets -- -D warnings
         cargo build --verbose
+        cargo run -p encrypto-cli -- doctor
         cargo test --verbose
