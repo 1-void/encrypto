@@ -9,6 +9,10 @@ BUILD_DIR="$PQC_DIR/build"
 OPENSSL_TAG="${OPENSSL_TAG:-openssl-3.5.5}"
 LIBOQS_TAG="${LIBOQS_TAG:-0.15.0}"
 OQSPROVIDER_TAG="${OQSPROVIDER_TAG:-0.10.0}"
+OPENSSL_COMMIT="${OPENSSL_COMMIT:-}"
+LIBOQS_COMMIT="${LIBOQS_COMMIT:-}"
+OQSPROVIDER_COMMIT="${OQSPROVIDER_COMMIT:-}"
+PQC_VERIFY="${PQC_VERIFY:-0}"
 
 PQC_WITH_OQS="${PQC_WITH_OQS:-0}"
 
@@ -30,10 +34,29 @@ require_cmd gcc
 
 mkdir -p "$SRC_DIR" "$BUILD_DIR"
 
+verify_commit() {
+  local dir="$1"
+  local expected="$2"
+  local name="$3"
+  if [[ -n "$expected" ]]; then
+    local actual
+    actual="$(git -C "$dir" rev-parse HEAD)"
+    if [[ "$actual" != "$expected" ]]; then
+      echo "error: $name commit mismatch ($actual != $expected)" >&2
+      exit 1
+    fi
+  elif [[ "$PQC_VERIFY" == "1" ]]; then
+    echo "error: PQC_VERIFY=1 requires ${name}_COMMIT to be set" >&2
+    exit 1
+  fi
+}
+
 clone_or_update() {
   local url="$1"
   local dir="$2"
   local ref="$3"
+  local commit="$4"
+  local name="$5"
   if [[ -d "$dir/.git" ]]; then
     if [[ "${PQC_UPDATE:-0}" == "1" ]]; then
       git -C "$dir" fetch --tags --force
@@ -45,13 +68,14 @@ clone_or_update() {
   else
     git clone --depth 1 --branch "$ref" "$url" "$dir"
   fi
+  verify_commit "$dir" "$commit" "$name"
 }
 
 echo "==> Fetching sources"
-clone_or_update https://github.com/openssl/openssl.git "$SRC_DIR/openssl" "$OPENSSL_TAG"
+clone_or_update https://github.com/openssl/openssl.git "$SRC_DIR/openssl" "$OPENSSL_TAG" "$OPENSSL_COMMIT" "OPENSSL"
 if [[ "$PQC_WITH_OQS" == "1" ]]; then
-  clone_or_update https://github.com/open-quantum-safe/liboqs.git "$SRC_DIR/liboqs" "$LIBOQS_TAG"
-  clone_or_update https://github.com/open-quantum-safe/oqs-provider.git "$SRC_DIR/oqs-provider" "$OQSPROVIDER_TAG"
+  clone_or_update https://github.com/open-quantum-safe/liboqs.git "$SRC_DIR/liboqs" "$LIBOQS_TAG" "$LIBOQS_COMMIT" "LIBOQS"
+  clone_or_update https://github.com/open-quantum-safe/oqs-provider.git "$SRC_DIR/oqs-provider" "$OQSPROVIDER_TAG" "$OQSPROVIDER_COMMIT" "OQSPROVIDER"
 fi
 
 echo "==> Building OpenSSL $OPENSSL_TAG"

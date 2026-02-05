@@ -5,8 +5,8 @@ use encrypto_core::{
 };
 use encrypto_policy::{
     cert_has_pqc_encryption_key, cert_has_pqc_signing_key, cert_is_pqc_only,
-    ensure_pqc_encryption_output, ensure_pqc_signature_output, is_pqc_kem_algo, is_pqc_sign_algo,
-    pqc_kem_key_version_ok, pqc_sign_key_version_ok,
+    ensure_pqc_encryption_output, ensure_pqc_signature_output, hash_is_pqc_ok, is_pqc_kem_algo,
+    is_pqc_sign_algo, pqc_kem_key_version_ok, pqc_sign_key_version_ok,
 };
 use openpgp::armor::{Kind as ArmorKind, Writer as ArmorWriter};
 use openpgp::cert::prelude::*;
@@ -14,15 +14,15 @@ use openpgp::crypto::{Password, SessionKey};
 use openpgp::packet::{PKESK, SKESK};
 use openpgp::parse::Parse;
 use openpgp::parse::stream::{
-    DecryptionHelper, DecryptorBuilder, DetachedVerifierBuilder, MessageStructure,
+    DecryptionHelper, DecryptorBuilder, DetachedVerifierBuilder, MessageLayer, MessageStructure,
     VerificationHelper,
 };
 use openpgp::policy::StandardPolicy;
 use openpgp::serialize::stream::{Armorer, Encryptor, LiteralWriter, Message, Signer};
 use openpgp::serialize::{Serialize, SerializeInto};
 use openpgp::types::ReasonForRevocation;
-use openpgp::types::{PublicKeyAlgorithm, SymmetricAlgorithm};
-use openpgp::{Cert, KeyHandle, KeyID, Packet, PacketPile, Profile};
+use openpgp::types::{AEADAlgorithm, PublicKeyAlgorithm, SymmetricAlgorithm};
+use openpgp::{Cert, KeyHandle, KeyID, Profile};
 use sequoia_openpgp as openpgp;
 use std::collections::HashMap;
 use std::fs;
@@ -30,6 +30,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
+use tempfile::NamedTempFile;
 
 #[derive(Clone)]
 pub struct NativeBackend {
@@ -63,7 +64,21 @@ impl NativeBackend {
         Ok(())
     }
 
+    fn ensure_absolute_home(&self) -> Result<(), EncryptoError> {
+        if self.home.is_absolute() {
+            return Ok(());
+        }
+        if std::env::var_os("ENCRYPTO_ALLOW_RELATIVE_HOME").is_some() {
+            return Ok(());
+        }
+        Err(EncryptoError::InvalidInput(
+            "ENCRYPTO_HOME must be an absolute path (set ENCRYPTO_ALLOW_RELATIVE_HOME=1 to override)"
+                .to_string(),
+        ))
+    }
+
     fn ensure_dirs(&self) -> Result<(), EncryptoError> {
+        self.ensure_absolute_home()?;
         fs::create_dir_all(self.public_dir())
             .map_err(|err| EncryptoError::Io(format!("create dir failed: {err}")))?;
         fs::create_dir_all(self.secret_dir())
@@ -80,6 +95,7 @@ impl NativeBackend {
     }
 
     fn load_all_certs(&self) -> Result<Vec<Cert>, EncryptoError> {
+        self.ensure_absolute_home()?;
         let mut certs: HashMap<String, Cert> = HashMap::new();
         for cert in self.load_certs_from_dir(&self.public_dir())? {
             certs.insert(cert.fingerprint().to_hex(), cert);
@@ -91,6 +107,7 @@ impl NativeBackend {
     }
 
     fn load_secret_certs(&self) -> Result<Vec<Cert>, EncryptoError> {
+        self.ensure_absolute_home()?;
         self.load_certs_from_dir(&self.secret_dir())
     }
 
@@ -155,17 +172,8 @@ impl NativeBackend {
             cert.to_vec()
                 .map_err(|err| EncryptoError::Backend(format!("serialize failed: {err}")))?
         };
-        fs::write(&path, bytes).map_err(|err| EncryptoError::Io(format!("write failed: {err}")))?;
-        #[cfg(unix)]
-        if secret {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&path)
-                .map_err(|err| EncryptoError::Io(format!("stat failed: {err}")))?
-                .permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(&path, perms)
-                .map_err(|err| EncryptoError::Io(format!("chmod failed: {err}")))?;
-        }
+        let mode = if secret { 0o600 } else { 0o644 };
+        write_atomic(&path, &bytes, mode)?;
         Ok(())
     }
 
@@ -455,6 +463,7 @@ impl Backend for NativeBackend {
                     "non-PQC key material found; PQC-only build".to_string(),
                 ));
             }
+            ensure_cert_signatures_pqc(cert)?;
             if cert.is_tsk() {
                 self.store_cert(cert, true)?;
                 self.store_cert(cert, false)?;
@@ -586,6 +595,7 @@ impl Backend for NativeBackend {
         }
 
         let message = Encryptor::for_recipients(message, recipients)
+            .aead_algo(AEADAlgorithm::default())
             .build()
             .map_err(|err| EncryptoError::Backend(format!("encryptor failed: {err}")))?;
         let mut message = LiteralWriter::new(message)
@@ -758,11 +768,8 @@ impl Backend for NativeBackend {
                 .map_err(|err| EncryptoError::Backend(format!("verifier failed: {err}")))?;
             let mut content = Vec::new();
             let valid = verifier.read_to_end(&mut content).is_ok();
-            let signer = if valid {
-                signer_from_signature(&sig_block)
-            } else {
-                None
-            };
+            let helper = verifier.into_helper();
+            let signer = if valid { helper.signer() } else { None };
             return Ok(VerifyResult {
                 valid,
                 signer,
@@ -779,11 +786,8 @@ impl Backend for NativeBackend {
             .map_err(|err| EncryptoError::Backend(format!("verifier failed: {err}")))?;
 
         let valid = verifier.verify_bytes(&req.message).is_ok();
-        let signer = if valid {
-            signer_from_signature(&req.signature)
-        } else {
-            None
-        };
+        let helper = verifier.into_helper();
+        let signer = if valid { helper.signer() } else { None };
 
         Ok(VerifyResult {
             valid,
@@ -887,11 +891,26 @@ impl Backend for NativeBackend {
 struct NativeHelper {
     certs: Vec<Cert>,
     passphrase: Option<Password>,
+    signer: Option<KeyId>,
+    multiple_signers: bool,
 }
 
 impl NativeHelper {
     fn new(certs: Vec<Cert>, passphrase: Option<Password>) -> Self {
-        Self { certs, passphrase }
+        Self {
+            certs,
+            passphrase,
+            signer: None,
+            multiple_signers: false,
+        }
+    }
+
+    fn signer(&self) -> Option<KeyId> {
+        if self.multiple_signers {
+            None
+        } else {
+            self.signer.clone()
+        }
     }
 }
 
@@ -910,7 +929,21 @@ impl VerificationHelper for NativeHelper {
         Ok(matches)
     }
 
-    fn check(&mut self, _structure: MessageStructure) -> openpgp::Result<()> {
+    fn check(&mut self, structure: MessageStructure) -> openpgp::Result<()> {
+        for layer in structure.iter() {
+            if let MessageLayer::SignatureGroup { results } = layer {
+                for result in results {
+                    if let Ok(good) = result {
+                        let fpr = good.ka.key().fingerprint().to_hex();
+                        match &self.signer {
+                            None => self.signer = Some(KeyId(fpr)),
+                            Some(existing) if existing.0 == fpr => {}
+                            Some(_) => self.multiple_signers = true,
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -966,7 +999,9 @@ fn resolve_native_home() -> PathBuf {
     if let Some(dir) = dirs::data_local_dir() {
         return dir.join("encrypto");
     }
-    PathBuf::from(".encrypto")
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".encrypto")
 }
 
 fn pqc_available() -> bool {
@@ -1019,6 +1054,84 @@ fn normalize_id(input: &str) -> String {
         .to_uppercase()
 }
 
+fn ensure_cert_signatures_pqc(cert: &Cert) -> Result<(), EncryptoError> {
+    if cert.bad_signatures().next().is_some() {
+        return Err(EncryptoError::InvalidInput(
+            "certificate contains invalid signatures".to_string(),
+        ));
+    }
+    for sig in cert.primary_key().signatures() {
+        ensure_signature_pqc(sig)?;
+    }
+    for uid in cert.userids() {
+        for sig in uid.signatures() {
+            ensure_signature_pqc(sig)?;
+        }
+    }
+    for attr in cert.user_attributes() {
+        for sig in attr.signatures() {
+            ensure_signature_pqc(sig)?;
+        }
+    }
+    for key in cert.keys() {
+        for sig in key.signatures() {
+            ensure_signature_pqc(sig)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_signature_pqc(sig: &openpgp::packet::Signature) -> Result<(), EncryptoError> {
+    let algo = sig.pk_algo();
+    if !is_pqc_sign_algo(algo) {
+        return Err(EncryptoError::InvalidInput(format!(
+            "non-PQC signature in certificate: {algo:?}"
+        )));
+    }
+    if sig.version() < 6 {
+        return Err(EncryptoError::InvalidInput(format!(
+            "signature version is v{}",
+            sig.version()
+        )));
+    }
+    if !hash_is_pqc_ok(sig.hash_algo()) {
+        return Err(EncryptoError::InvalidInput(format!(
+            "weak hash used in certificate signature: {:?}",
+            sig.hash_algo()
+        )));
+    }
+    Ok(())
+}
+
+fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<(), EncryptoError> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| EncryptoError::InvalidInput("invalid path for atomic write".to_string()))?;
+    let mut temp = NamedTempFile::new_in(dir)
+        .map_err(|err| EncryptoError::Io(format!("temp file error: {err}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = temp
+            .as_file()
+            .metadata()
+            .map_err(|err| EncryptoError::Io(format!("stat failed: {err}")))?
+            .permissions();
+        perms.set_mode(mode);
+        temp.as_file()
+            .set_permissions(perms)
+            .map_err(|err| EncryptoError::Io(format!("chmod failed: {err}")))?;
+    }
+    temp.write_all(bytes)
+        .map_err(|err| EncryptoError::Io(format!("write failed: {err}")))?;
+    temp.as_file()
+        .sync_all()
+        .map_err(|err| EncryptoError::Io(format!("sync failed: {err}")))?;
+    temp.persist(path)
+        .map_err(|err| EncryptoError::Io(format!("persist failed: {err}")))?;
+    Ok(())
+}
+
 fn is_full_fingerprint(input: &str) -> bool {
     let len = input.len();
     if len != 40 && len != 64 {
@@ -1058,31 +1171,7 @@ fn cert_matches(cert: &Cert, needle_hex: &str, needle_raw: &str) -> bool {
         .any(|u| u.userid().to_string().to_lowercase().contains(&needle_raw))
 }
 
-fn signer_from_signature(bytes: &[u8]) -> Option<KeyId> {
-    let pile = PacketPile::from_bytes(bytes).ok()?;
-    let mut handles: Vec<String> = Vec::new();
-    for packet in pile.descendants() {
-        if let Packet::Signature(sig) = packet {
-            let mut added = false;
-            for fpr in sig.issuer_fingerprints() {
-                handles.push(format!("{:X}", fpr));
-                added = true;
-            }
-            if !added {
-                for issuer in sig.get_issuers() {
-                    handles.push(format!("{:X}", issuer));
-                }
-            }
-        }
-    }
-    handles.sort();
-    handles.dedup();
-    if handles.len() == 1 {
-        Some(KeyId(handles.remove(0)))
-    } else {
-        None
-    }
-}
+// signer extraction is handled by the streaming verifier helper.
 
 fn cleartext_signature_block(bytes: &[u8]) -> Result<Vec<u8>, EncryptoError> {
     const BEGIN: &str = "-----BEGIN PGP SIGNATURE-----";

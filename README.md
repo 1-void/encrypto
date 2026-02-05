@@ -31,6 +31,8 @@ Generate a high-assurance PQC key:
 cargo run -p encrypto-cli -- keygen "Alice <alice@example.com>" --pqc-level high
 ```
 
+Default `--pqc-level` is `high` for stronger parameters. Use `--pqc-level baseline` if you need smaller keys/signatures.
+
 Generate a PQC key with a passphrase (native backend):
 ```bash
 cargo run -p encrypto-cli -- --passphrase-file ./pass.txt keygen "Alice <alice@example.com>"
@@ -48,21 +50,30 @@ source scripts/pqc-env.sh
 cargo run -p encrypto-cli -- info
 ```
 
+Optional source verification (recommended for reproducibility):
+```bash
+export PQC_VERIFY=1
+export OPENSSL_COMMIT=<expected-commit-sha>
+export LIBOQS_COMMIT=<expected-commit-sha>
+export OQSPROVIDER_COMMIT=<expected-commit-sha>
+./scripts/bootstrap-pqc.sh
+```
+
 Basics:
 ```bash
 cargo run -p encrypto-cli -- encrypt -r <KEY_ID> message.txt -o msg.pgp
 cargo run -p encrypto-cli -- decrypt -o message.txt msg.pgp
 cargo run -p encrypto-cli -- sign -u <KEY_ID> message.txt -o message.sig
-cargo run -p encrypto-cli -- verify message.sig message.txt
-cargo run -p encrypto-cli -- sign -u <KEY_ID> --clearsign message.txt -o message.asc
-cargo run -p encrypto-cli -- verify --clearsigned message.asc
-cargo run -p encrypto-cli -- export <KEY_ID> --armor -o key.asc
 cargo run -p encrypto-cli -- verify --signer <FULL_FINGERPRINT> message.sig message.txt
+cargo run -p encrypto-cli -- sign -u <KEY_ID> --clearsign message.txt -o message.asc
+cargo run -p encrypto-cli -- verify --signer <FULL_FINGERPRINT> --clearsigned message.asc
+cargo run -p encrypto-cli -- export <KEY_ID> --armor -o key.asc
 ```
 
-Note: sensitive operations require a full fingerprint (40 or 64 hex characters). Use `list-keys` to find the exact fingerprint.
+Note: sensitive operations require a full fingerprint (40 or 64 hex characters). Verification requires `--signer` to pin the expected signer. Use `list-keys` to find the exact fingerprint.
 
 Passphrase note: prefer `--passphrase-file` to avoid exposing secrets in process listings.
+Large files: inputs are limited to 64 MiB by default. Override with `ENCRYPTO_MAX_INPUT_BYTES`.
 
 Key lifecycle:
 ```bash

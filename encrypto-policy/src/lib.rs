@@ -1,6 +1,7 @@
 use openpgp::Cert;
 use openpgp::Packet;
 use openpgp::PacketPile;
+use openpgp::packet::Tag;
 use openpgp::parse::Parse;
 use openpgp::policy::StandardPolicy;
 use openpgp::types::{HashAlgorithm, PublicKeyAlgorithm};
@@ -124,6 +125,7 @@ pub fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), PolicyError> {
         .map_err(|err| PolicyError::Parse(format!("parse output failed: {err}")))?;
     let mut pkesk_count = 0usize;
     let mut seip_count = 0usize;
+    let mut seip_v2_count = 0usize;
     for packet in pile.descendants() {
         if let Packet::PKESK(pkesk) = packet {
             pkesk_count += 1;
@@ -134,8 +136,28 @@ pub fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), PolicyError> {
                 )));
             }
         }
-        if let Packet::SEIP(_) = packet {
+        if let Packet::SEIP(seip) = packet {
             seip_count += 1;
+            if seip.version() == 2 {
+                seip_v2_count += 1;
+            } else {
+                return Err(PolicyError::Violation(
+                    "SEIP v1 is not allowed; require AEAD (SEIP v2)".to_string(),
+                ));
+            }
+        }
+        if let Packet::MDC(_) = packet {
+            return Err(PolicyError::Violation(
+                "deprecated MDC packet found".to_string(),
+            ));
+        }
+        if let Packet::Unknown(unknown) = packet {
+            if matches!(unknown.tag(), Tag::SED | Tag::AED) {
+                return Err(PolicyError::Violation(format!(
+                    "deprecated encrypted packet found: {:?}",
+                    unknown.tag()
+                )));
+            }
         }
     }
     if pkesk_count == 0 {
@@ -146,6 +168,11 @@ pub fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), PolicyError> {
     if seip_count == 0 {
         return Err(PolicyError::Violation(
             "encrypted data is not integrity protected (missing SEIP packet)".to_string(),
+        ));
+    }
+    if seip_v2_count == 0 {
+        return Err(PolicyError::Violation(
+            "AEAD is required (SEIP v2 missing)".to_string(),
         ));
     }
     Ok(())

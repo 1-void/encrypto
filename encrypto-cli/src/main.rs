@@ -76,7 +76,7 @@ enum Command {
     #[command(alias = "gen")]
     Keygen {
         user_id: String,
-        #[arg(long, value_enum, default_value_t = PqcLevelArg::Baseline)]
+        #[arg(long, value_enum, default_value_t = PqcLevelArg::High)]
         pqc_level: PqcLevelArg,
         #[arg(long = "no-passphrase")]
         no_passphrase: bool,
@@ -164,7 +164,7 @@ enum Command {
         key_id: String,
         #[arg(long)]
         user_id: Option<String>,
-        #[arg(long, value_enum, default_value_t = PqcLevelArg::Baseline)]
+        #[arg(long, value_enum, default_value_t = PqcLevelArg::High)]
         pqc_level: PqcLevelArg,
         #[arg(long = "no-passphrase")]
         no_passphrase: bool,
@@ -364,8 +364,8 @@ fn main() -> Result<()> {
         } => {
             let expected_signer = signer
                 .as_ref()
-                .map(|value| normalize_fingerprint(value))
-                .transpose()?;
+                .ok_or_else(|| anyhow!("verify requires --signer <FULL_FINGERPRINT>"))?;
+            let expected_signer = normalize_fingerprint(expected_signer)?;
             if clearsigned {
                 let input_path = merge_arg("input", input, input_file, "--input", "FILE")?;
                 let signature = read_input(input_path)?;
@@ -376,7 +376,7 @@ fn main() -> Result<()> {
                     pqc_policy: pqc_policy.clone(),
                 })?;
                 if result.valid {
-                    enforce_expected_signer(expected_signer.as_deref(), &result)?;
+                    enforce_expected_signer(Some(&expected_signer), &result)?;
                     match result.signer {
                         Some(signer) => println!("valid signature from {}", signer.0),
                         None => println!("valid signature"),
@@ -405,7 +405,7 @@ fn main() -> Result<()> {
                     pqc_policy: pqc_policy.clone(),
                 })?;
                 if result.valid {
-                    enforce_expected_signer(expected_signer.as_deref(), &result)?;
+                    enforce_expected_signer(Some(&expected_signer), &result)?;
                     match result.signer {
                         Some(signer) => println!("valid signature from {}", signer.0),
                         None => println!("valid signature"),
@@ -466,18 +466,19 @@ fn main() -> Result<()> {
 }
 
 fn read_input(path: Option<String>) -> Result<Vec<u8>> {
+    let limit = max_input_bytes()?;
     match path {
-        Some(path) if path == "-" => {
-            let mut buf = Vec::new();
-            io::stdin().read_to_end(&mut buf)?;
-            Ok(buf)
+        Some(path) if path == "-" => read_to_end_limited(io::stdin(), limit),
+        Some(path) => {
+            let metadata = fs::metadata(&path)?;
+            if metadata.len() > limit as u64 {
+                return Err(anyhow!(
+                    "input exceeds size limit ({limit} bytes); set ENCRYPTO_MAX_INPUT_BYTES to override"
+                ));
+            }
+            Ok(fs::read(path)?)
         }
-        Some(path) => Ok(fs::read(path)?),
-        None => {
-            let mut buf = Vec::new();
-            io::stdin().read_to_end(&mut buf)?;
-            Ok(buf)
-        }
+        None => read_to_end_limited(io::stdin(), limit),
     }
 }
 
@@ -501,7 +502,7 @@ fn print_env(var: &str) {
 fn write_output(path: Option<String>, bytes: &[u8]) -> Result<()> {
     match path {
         Some(path) => {
-            fs::write(path, bytes)?;
+            write_file_secure(&path, bytes)?;
             Ok(())
         }
         None => {
@@ -534,6 +535,53 @@ fn format_policy(policy: &PqcPolicy) -> &'static str {
         PqcPolicy::Preferred => "preferred",
         PqcPolicy::Required => "required",
     }
+}
+
+fn max_input_bytes() -> Result<usize> {
+    const DEFAULT_LIMIT: usize = 64 * 1024 * 1024;
+    match std::env::var("ENCRYPTO_MAX_INPUT_BYTES") {
+        Ok(value) => value
+            .parse::<usize>()
+            .map_err(|err| anyhow!("invalid ENCRYPTO_MAX_INPUT_BYTES value {value:?}: {err}")),
+        Err(_) => Ok(DEFAULT_LIMIT),
+    }
+}
+
+fn read_to_end_limited<R: Read>(mut reader: R, limit: usize) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let read = reader.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        if buf.len() + read > limit {
+            return Err(anyhow!(
+                "input exceeds size limit ({limit} bytes); set ENCRYPTO_MAX_INPUT_BYTES to override"
+            ));
+        }
+        buf.extend_from_slice(&chunk[..read]);
+    }
+    Ok(buf)
+}
+
+fn write_file_secure(path: &str, bytes: &[u8]) -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
 }
 
 fn normalize_fingerprint(value: &str) -> Result<String> {
