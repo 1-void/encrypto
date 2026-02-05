@@ -72,6 +72,7 @@ pub struct SignRequest {
 pub struct VerifyRequest {
     pub message: Vec<u8>,
     pub signature: Vec<u8>,
+    pub pqc_policy: PqcPolicy,
 }
 
 #[derive(Debug, Clone)]

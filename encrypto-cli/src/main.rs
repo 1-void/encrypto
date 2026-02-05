@@ -299,7 +299,11 @@ fn main() -> Result<()> {
         Command::Verify { input, sig } => {
             let message = read_input(input)?;
             let signature = read_input(sig)?;
-            let result = backend.verify(VerifyRequest { message, signature })?;
+            let result = backend.verify(VerifyRequest {
+                message,
+                signature,
+                pqc_policy: pqc_policy.clone(),
+            })?;
             if result.valid {
                 match result.signer {
                     Some(signer) => println!("valid signature from {}", signer.0),

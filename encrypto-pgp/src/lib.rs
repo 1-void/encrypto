@@ -381,6 +381,7 @@ impl Backend for GpgBackend {
     }
 
     fn verify(&self, req: VerifyRequest) -> Result<VerifyResult, EncryptoError> {
+        self.ensure_pqc_policy(&req.pqc_policy)?;
         let mut message_file = NamedTempFile::new()
             .map_err(|err| EncryptoError::Io(format!("temp file error: {err}")))?;
         message_file
@@ -950,6 +951,11 @@ impl Backend for NativeBackend {
     }
 
     fn verify(&self, req: VerifyRequest) -> Result<VerifyResult, EncryptoError> {
+        let require_pqc = matches!(req.pqc_policy, PqcPolicy::Required)
+            || matches!(self.pqc_policy, PqcPolicy::Required);
+        if require_pqc {
+            ensure_pqc_signature_output(&req.signature)?;
+        }
         let certs = self.load_all_certs()?;
         let helper = NativeHelper::new(certs);
         let p = &StandardPolicy::new();
