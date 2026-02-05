@@ -4,7 +4,10 @@ use encrypto_pgp::{GpgBackend, GpgConfig};
 #[test]
 fn gpg_backend_is_disabled() {
     let backend = GpgBackend::new(GpgConfig::default());
-    assert!(backend.list_keys().is_err(), "gpg backend should be disabled");
+    assert!(
+        backend.list_keys().is_err(),
+        "gpg backend should be disabled"
+    );
 
     let result = backend.encrypt(EncryptRequest {
         recipients: vec![KeyId("dummy".to_string())],

@@ -20,9 +20,21 @@ fn pqc_key_version_rules() {
     assert!(pqc_sign_key_version_ok(6));
     assert!(!pqc_sign_key_version_ok(5));
 
-    assert!(pqc_kem_key_version_ok(PublicKeyAlgorithm::MLKEM768_X25519, 4));
-    assert!(!pqc_kem_key_version_ok(PublicKeyAlgorithm::MLKEM768_X25519, 3));
+    assert!(pqc_kem_key_version_ok(
+        PublicKeyAlgorithm::MLKEM768_X25519,
+        4
+    ));
+    assert!(!pqc_kem_key_version_ok(
+        PublicKeyAlgorithm::MLKEM768_X25519,
+        3
+    ));
 
-    assert!(pqc_kem_key_version_ok(PublicKeyAlgorithm::MLKEM1024_X448, 6));
-    assert!(!pqc_kem_key_version_ok(PublicKeyAlgorithm::MLKEM1024_X448, 5));
+    assert!(pqc_kem_key_version_ok(
+        PublicKeyAlgorithm::MLKEM1024_X448,
+        6
+    ));
+    assert!(!pqc_kem_key_version_ok(
+        PublicKeyAlgorithm::MLKEM1024_X448,
+        5
+    ));
 }
