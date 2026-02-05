@@ -309,29 +309,32 @@ fn partial_id_lists_matches() {
 
 #[test]
 fn pqc_roundtrip_import_export() {
-    let _home = set_temp_home();
-    let backend = NativeBackend::new(PqcPolicy::Required);
-    if !require_pqc(backend.supports_pqc()) {
-        return;
-    }
+    let (secret, public, key_id) = {
+        let _home = set_temp_home();
+        let backend = NativeBackend::new(PqcPolicy::Required);
+        if !require_pqc(backend.supports_pqc()) {
+            return;
+        }
 
-    let meta = backend
-        .generate_key(KeyGenParams {
-            user_id: UserId("Roundtrip <rt@example.com>".to_string()),
-            algo: None,
-            pqc_policy: PqcPolicy::Required,
-            pqc_level: PqcLevel::Baseline,
-            passphrase: None,
-            allow_unprotected: true,
-        })
-        .expect("keygen");
+        let meta = backend
+            .generate_key(KeyGenParams {
+                user_id: UserId("Roundtrip <rt@example.com>".to_string()),
+                algo: None,
+                pqc_policy: PqcPolicy::Required,
+                pqc_level: PqcLevel::Baseline,
+                passphrase: None,
+                allow_unprotected: true,
+            })
+            .expect("keygen");
 
-    let secret = backend
-        .export_key(&meta.key_id, true, false)
-        .expect("export secret");
-    let public = backend
-        .export_key(&meta.key_id, false, false)
-        .expect("export public");
+        let secret = backend
+            .export_key(&meta.key_id, true, false)
+            .expect("export secret");
+        let public = backend
+            .export_key(&meta.key_id, false, false)
+            .expect("export public");
+        (secret, public, meta.key_id)
+    };
 
     let _home2 = set_temp_home();
     let backend2 = NativeBackend::new(PqcPolicy::Required);
@@ -344,7 +347,7 @@ fn pqc_roundtrip_import_export() {
     let msg = b"roundtrip message";
     let sig = backend2
         .sign(SignRequest {
-            signer: meta.key_id.clone(),
+            signer: key_id.clone(),
             message: msg.to_vec(),
             armor: false,
             cleartext: false,
@@ -367,7 +370,7 @@ fn pqc_roundtrip_import_export() {
 
     let enc = backend2
         .encrypt(EncryptRequest {
-            recipients: vec![meta.key_id],
+            recipients: vec![key_id],
             plaintext: msg.to_vec(),
             armor: false,
             pqc_policy: PqcPolicy::Required,
@@ -887,26 +890,29 @@ fn decrypt_rejects_tampered_ciphertext() {
 
 #[test]
 fn decrypt_rejects_wrong_key() {
-    let _home = set_temp_home();
-    let backend_a = NativeBackend::new(PqcPolicy::Required);
-    if !require_pqc(backend_a.supports_pqc()) {
-        return;
-    }
+    let (public_a, key_a_id) = {
+        let _home = set_temp_home();
+        let backend_a = NativeBackend::new(PqcPolicy::Required);
+        if !require_pqc(backend_a.supports_pqc()) {
+            return;
+        }
 
-    let key_a = backend_a
-        .generate_key(KeyGenParams {
-            user_id: UserId("KeyA <a@example.com>".to_string()),
-            algo: None,
-            pqc_policy: PqcPolicy::Required,
-            pqc_level: PqcLevel::Baseline,
-            passphrase: None,
-            allow_unprotected: true,
-        })
-        .expect("keygen A");
+        let key_a = backend_a
+            .generate_key(KeyGenParams {
+                user_id: UserId("KeyA <a@example.com>".to_string()),
+                algo: None,
+                pqc_policy: PqcPolicy::Required,
+                pqc_level: PqcLevel::Baseline,
+                passphrase: None,
+                allow_unprotected: true,
+            })
+            .expect("keygen A");
 
-    let public_a = backend_a
-        .export_key(&key_a.key_id, false, false)
-        .expect("export A");
+        let public_a = backend_a
+            .export_key(&key_a.key_id, false, false)
+            .expect("export A");
+        (public_a, key_a.key_id)
+    };
 
     let _home2 = set_temp_home();
     let backend_b = NativeBackend::new(PqcPolicy::Required);
@@ -929,7 +935,7 @@ fn decrypt_rejects_wrong_key() {
 
     let ciphertext = backend_b
         .encrypt(EncryptRequest {
-            recipients: vec![key_a.key_id],
+            recipients: vec![key_a_id],
             plaintext: b"wrong key test".to_vec(),
             armor: false,
             pqc_policy: PqcPolicy::Required,

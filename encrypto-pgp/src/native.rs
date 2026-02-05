@@ -22,7 +22,7 @@ use openpgp::serialize::stream::{Armorer, Encryptor, LiteralWriter, Message, Sig
 use openpgp::serialize::{Serialize, SerializeInto};
 use openpgp::types::ReasonForRevocation;
 use openpgp::types::{AEADAlgorithm, PublicKeyAlgorithm, SymmetricAlgorithm};
-use openpgp::{Cert, KeyHandle, KeyID, Profile};
+use openpgp::{Cert, KeyHandle, KeyID, Packet, PacketPile, Profile};
 use sequoia_openpgp as openpgp;
 use std::collections::HashMap;
 use std::fs;
@@ -230,6 +230,16 @@ impl NativeBackend {
         for cert in certs {
             if normalize_id(&cert.fingerprint().to_hex()) == needle {
                 return Ok(cert);
+            }
+        }
+        if secret_only {
+            let certs = self.load_all_certs()?;
+            for cert in certs {
+                if normalize_id(&cert.fingerprint().to_hex()) == needle {
+                    return Err(EncryptoError::InvalidInput(
+                        "secret key not available".to_string(),
+                    ));
+                }
             }
         }
         Err(EncryptoError::InvalidInput(format!(
@@ -641,10 +651,25 @@ impl Backend for NativeBackend {
         });
         let helper = NativeHelper::new(certs, self.passphrase.clone());
         let p = &StandardPolicy::new();
-        let mut decryptor = DecryptorBuilder::from_bytes(&req.ciphertext)
+        let mut decryptor = match DecryptorBuilder::from_bytes(&req.ciphertext)
             .map_err(|err| EncryptoError::Backend(format!("parse failed: {err}")))?
             .with_policy(p, None, helper)
-            .map_err(|err| EncryptoError::Backend(format!("decryptor failed: {err}")))?;
+        {
+            Ok(decryptor) => decryptor,
+            Err(err) => {
+                if self.passphrase.is_none() && has_encrypted_secret {
+                    if err
+                        .downcast_ref::<openpgp::Error>()
+                        .is_some_and(|e| matches!(e, openpgp::Error::MissingSessionKey(_)))
+                    {
+                        return Err(EncryptoError::InvalidInput(
+                            "secret key is encrypted; passphrase required".to_string(),
+                        ));
+                    }
+                }
+                return Err(EncryptoError::Backend(format!("decryptor failed: {err}")));
+            }
+        };
 
         let mut out = Vec::new();
         if let Err(err) = decryptor.read_to_end(&mut out) {
@@ -779,9 +804,16 @@ impl Backend for NativeBackend {
                 .with_policy(p, None, helper)
                 .map_err(|err| EncryptoError::Backend(format!("verifier failed: {err}")))?;
             let mut content = Vec::new();
-            let valid = verifier.read_to_end(&mut content).is_ok();
+            let read_ok = verifier.read_to_end(&mut content).is_ok();
             let helper = verifier.into_helper();
-            let signer = if valid { helper.signer() } else { None };
+            let valid = read_ok && helper.valid_signature();
+            let signer = if valid {
+                helper
+                    .signer()
+                    .or_else(|| signer_from_signature_bytes(&sig_block))
+            } else {
+                None
+            };
             return Ok(VerifyResult {
                 valid,
                 signer,
@@ -797,9 +829,16 @@ impl Backend for NativeBackend {
             .with_policy(p, None, helper)
             .map_err(|err| EncryptoError::Backend(format!("verifier failed: {err}")))?;
 
-        let valid = verifier.verify_bytes(&req.message).is_ok();
+        let read_ok = verifier.verify_bytes(&req.message).is_ok();
         let helper = verifier.into_helper();
-        let signer = if valid { helper.signer() } else { None };
+        let valid = read_ok && helper.valid_signature();
+        let signer = if valid {
+            helper
+                .signer()
+                .or_else(|| signer_from_signature_bytes(&req.signature))
+        } else {
+            None
+        };
 
         Ok(VerifyResult {
             valid,
@@ -905,6 +944,8 @@ struct NativeHelper {
     passphrase: Option<Password>,
     signer: Option<KeyId>,
     multiple_signers: bool,
+    saw_signature: bool,
+    has_valid_signature: bool,
 }
 
 impl NativeHelper {
@@ -914,6 +955,8 @@ impl NativeHelper {
             passphrase,
             signer: None,
             multiple_signers: false,
+            saw_signature: false,
+            has_valid_signature: false,
         }
     }
 
@@ -924,6 +967,10 @@ impl NativeHelper {
             self.signer.clone()
         }
     }
+
+    fn valid_signature(&self) -> bool {
+        self.saw_signature && self.has_valid_signature
+    }
 }
 
 impl VerificationHelper for NativeHelper {
@@ -933,8 +980,21 @@ impl VerificationHelper for NativeHelper {
         }
         let mut matches = Vec::new();
         for cert in &self.certs {
-            let fpr = cert.fingerprint();
-            if ids.iter().any(|id| fpr.aliases(id)) {
+            let mut matched = false;
+            for id in ids {
+                if cert.fingerprint().aliases(id) {
+                    matched = true;
+                    break;
+                }
+                if cert
+                    .keys()
+                    .any(|key| key.key().fingerprint().aliases(id))
+                {
+                    matched = true;
+                    break;
+                }
+            }
+            if matched {
                 matches.push(cert.clone());
             }
         }
@@ -945,8 +1005,10 @@ impl VerificationHelper for NativeHelper {
         for layer in structure.iter() {
             if let MessageLayer::SignatureGroup { results } = layer {
                 for result in results {
+                    self.saw_signature = true;
                     if let Ok(good) = result {
-                        let fpr = good.ka.key().fingerprint().to_hex();
+                        self.has_valid_signature = true;
+                        let fpr = good.ka.cert().fingerprint().to_hex();
                         match &self.signer {
                             None => self.signer = Some(KeyId(fpr)),
                             Some(existing) if existing.0 == fpr => {}
@@ -958,6 +1020,21 @@ impl VerificationHelper for NativeHelper {
         }
         Ok(())
     }
+}
+
+fn signer_from_signature_bytes(bytes: &[u8]) -> Option<KeyId> {
+    let pile = PacketPile::from_bytes(bytes).ok()?;
+    for packet in pile.descendants() {
+        if let Packet::Signature(sig) = packet {
+            if let Some(issuer) = sig.get_issuers().into_iter().next() {
+                return Some(match issuer {
+                    KeyHandle::Fingerprint(fpr) => KeyId(fpr.to_hex()),
+                    KeyHandle::KeyID(id) => KeyId(id.to_hex()),
+                });
+            }
+        }
+    }
+    None
 }
 
 impl DecryptionHelper for NativeHelper {
@@ -1279,5 +1356,15 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn signer_from_signature_bytes_extracts_issuer() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../vendor/sequoia-openpgp/tests/data/pqc/ietf/v6-slhdsa-256s-sample-signature.pgp",
+        );
+        let bytes = std::fs::read(&path).expect("read signature bytes");
+        let signer = signer_from_signature_bytes(&bytes);
+        assert!(signer.is_some(), "expected issuer fingerprint in signature");
     }
 }

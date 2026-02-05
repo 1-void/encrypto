@@ -444,6 +444,7 @@ fn clearsign_and_verify_roundtrip() {
             "--signer",
             &fpr,
             "--clearsigned",
+            "--in",
             sig_path.to_str().unwrap(),
         ],
         &home,
