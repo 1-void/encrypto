@@ -3,6 +3,7 @@ use encrypto_core::{
     UserId, VerifyRequest,
 };
 use encrypto_pgp::NativeBackend;
+use sequoia_openpgp::serialize::SerializeInto;
 
 fn set_temp_home() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -74,6 +75,21 @@ fn assert_pqc_signature(bytes: &[u8]) {
         }
     }
     assert!(sig_count > 0, "no signatures found");
+}
+
+fn generate_classic_cert_bytes(user_id: &str) -> Vec<u8> {
+    use openpgp::cert::prelude::*;
+    use openpgp::Profile;
+    use sequoia_openpgp as openpgp;
+
+    let (cert, _rev) = CertBuilder::general_purpose(Some(user_id))
+        .set_profile(Profile::RFC9580)
+        .expect("profile")
+        .set_cipher_suite(CipherSuite::Cv25519)
+        .generate()
+        .expect("generate cert");
+
+    cert.as_tsk().to_vec().expect("serialize secret cert")
 }
 
 #[test]
@@ -192,73 +208,29 @@ fn pqc_roundtrip_import_export() {
 }
 
 #[test]
-fn classical_signature_rejected_when_pqc_required() {
+fn non_required_policy_rejected() {
     let _home = set_temp_home();
     let backend = NativeBackend::new(PqcPolicy::Disabled);
 
-    let meta = backend
-        .generate_key(KeyGenParams {
-            user_id: UserId("Classic <classic@example.com>".to_string()),
-            algo: None,
-            pqc_policy: PqcPolicy::Disabled,
-            pqc_level: PqcLevel::Baseline,
-            passphrase: None,
-            allow_unprotected: true,
-        })
-        .expect("keygen");
-
-    let msg = b"classic message";
-    let sig = backend
-        .sign(SignRequest {
-            signer: meta.key_id,
-            message: msg.to_vec(),
-            armor: false,
-            pqc_policy: PqcPolicy::Disabled,
-        })
-        .expect("sign");
-
-    let required_backend = NativeBackend::new(PqcPolicy::Required);
-    let result = required_backend.verify(VerifyRequest {
-        message: msg.to_vec(),
-        signature: sig,
-        pqc_policy: PqcPolicy::Required,
+    let result = backend.generate_key(KeyGenParams {
+        user_id: UserId("No Classic <classic@example.com>".to_string()),
+        algo: None,
+        pqc_policy: PqcPolicy::Disabled,
+        pqc_level: PqcLevel::Baseline,
+        passphrase: None,
+        allow_unprotected: true,
     });
-    assert!(result.is_err(), "expected PQC-required verify to fail");
+    assert!(result.is_err(), "expected non-required policy to fail");
 }
 
 #[test]
-fn classical_encryption_rejected_when_pqc_required() {
+fn non_pqc_import_rejected() {
     let _home = set_temp_home();
-    let backend = NativeBackend::new(PqcPolicy::Disabled);
+    let backend = NativeBackend::new(PqcPolicy::Required);
 
-    let meta = backend
-        .generate_key(KeyGenParams {
-            user_id: UserId("Classic Encrypt <classic-enc@example.com>".to_string()),
-            algo: None,
-            pqc_policy: PqcPolicy::Disabled,
-            pqc_level: PqcLevel::Baseline,
-            passphrase: None,
-            allow_unprotected: true,
-        })
-        .expect("keygen");
-
-    let msg = b"classic encryption";
-    let enc = backend
-        .encrypt(EncryptRequest {
-            recipients: vec![meta.key_id.clone()],
-            plaintext: msg.to_vec(),
-            armor: false,
-            pqc_policy: PqcPolicy::Disabled,
-            compat: false,
-        })
-        .expect("encrypt");
-
-    let required_backend = NativeBackend::new(PqcPolicy::Required);
-    let result = required_backend.decrypt(DecryptRequest {
-        ciphertext: enc,
-        pqc_policy: PqcPolicy::Required,
-    });
-    assert!(result.is_err(), "expected PQC-required decrypt to fail");
+    let classic = generate_classic_cert_bytes("Classic Import <classic-import@example.com>");
+    let result = backend.import_key(&classic);
+    assert!(result.is_err(), "expected non-PQC import to fail");
 }
 
 #[test]

@@ -15,7 +15,7 @@ use std::io::{self, Read, Write};
     about = "OpenPGP-compatible crypto CLI with PQC planning"
 )]
 struct Cli {
-    #[arg(long, value_enum, default_value_t = BackendKind::Gpg)]
+    #[arg(long, value_enum, default_value_t = BackendKind::Native)]
     backend: BackendKind,
 
     #[arg(long, conflicts_with = "backend")]
@@ -32,7 +32,7 @@ struct Cli {
 
     #[arg(
         long = "compat",
-        help = "Allow mixed PQC + classical recipients (dangerous; not allowed with --pqc required)"
+        help = "Allow mixed PQC + classical recipients (unsupported in PQC-only build)"
     )]
     compat: bool,
 
@@ -246,20 +246,17 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut pqc_policy: PqcPolicy = cli.pqc.into();
-    if cli.pqc_disabled {
-        pqc_policy = PqcPolicy::Disabled;
-        eprintln!("warning: PQC disabled; outputs may be vulnerable to quantum attacks");
-    }
-    if cli.compat && matches!(pqc_policy, PqcPolicy::Required) {
+    if cli.pqc_disabled || !matches!(pqc_policy, PqcPolicy::Required) {
         return Err(anyhow!(
-            "--compat cannot be used with --pqc required; PQC-required mode enforces all-PQC recipients"
+            "PQC-only build requires --pqc required (default); non-PQC modes are disabled"
         ));
     }
     if cli.compat {
-        eprintln!(
-            "warning: --compat allows mixed PQC/classical recipients; PQ confidentiality is reduced"
-        );
+        return Err(anyhow!(
+            "--compat is not supported in a PQC-only build"
+        ));
     }
+    pqc_policy = PqcPolicy::Required;
 
     let mut backend_kind = cli.backend;
     if cli.native {
@@ -267,6 +264,11 @@ fn main() -> Result<()> {
     }
     if cli.gpg {
         backend_kind = BackendKind::Gpg;
+    }
+    if matches!(backend_kind, BackendKind::Gpg) {
+        return Err(anyhow!(
+            "PQC-only build: gpg backend is disabled; use --native"
+        ));
     }
 
     if cli.gpg_passphrase.is_some() {

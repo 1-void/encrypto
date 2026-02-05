@@ -8,7 +8,7 @@ We follow the draft’s post-quantum OpenPGP profile:
 - Composite (hybrid) algorithms for encryption and signatures (ML-KEM + X25519, ML-DSA + Ed25519/Ed448).
 - v6 key profile for PQC operations.
 - PQC required by default; outputs are validated to avoid classical fallbacks.
-- `--compat` explicitly allows mixed PQC + classical recipients with a warning.
+- PQC-only build: classical modes and the gpg backend are disabled.
 
 See `SPEC.md` for the implementation profile and policy details.
 
@@ -62,16 +62,6 @@ cargo run -p encrypto-cli -- --native rotate <KEY_ID>
 Diagnostics:
 ```bash
 cargo run -p encrypto-cli -- --native doctor
-```
-
-Disable PQC (dangerous, for compatibility only):
-```bash
-cargo run -p encrypto-cli -- --gpg --pqc-disabled list-keys
-```
-
-Allow mixed PQC + classical recipients (dangerous; reduces PQ confidentiality):
-```bash
-cargo run -p encrypto-cli -- --native --compat encrypt -r <KEY_ID> message.txt -o msg.pgp
 ```
 
 If you need oqs-provider explicitly:

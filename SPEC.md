@@ -25,11 +25,11 @@ We align with the draft’s composite (hybrid) algorithms and IDs:
 
 ## Policy
 - `PQC required` is the default.
+- PQC-only build: non-required policies are rejected and non-PQC artifacts are refused.
 - When required, all outputs are validated and must contain only PQC algorithms:
   - Encryption: every PKESK must use PQC KEM algorithms.
   - Signatures: signature algorithms must be PQC; hashes must be >= 256-bit.
 - Decrypt/verify also reject non-PQC artifacts when policy is required.
-- `--compat` explicitly allows mixed PQC + classical recipients with a warning.
 
 ## Key Generation Levels
 - `baseline`: ML-DSA-65 + Ed25519, ML-KEM-768 + X25519.
@@ -37,9 +37,9 @@ We align with the draft’s composite (hybrid) algorithms and IDs:
 
 ## Backend Notes
 - `native` backend uses Sequoia OpenPGP with OpenSSL 3.5+ PQC support.
-- `gpg` backend is provided for compatibility only; it does not support PQC.
+- `gpg` backend is disabled in PQC-only builds.
 
 ## Non-goals (for now)
 - Full GUI or Kleopatra parity.
-- Automatic classic+PQC dual artifacts without explicit `--compat`.
+- Classic/PQC compatibility modes or dual artifacts.
 - Broad interop guarantees beyond the draft profile.

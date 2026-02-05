@@ -94,6 +94,31 @@ pub fn cert_has_pqc_signing_key(cert: &Cert) -> bool {
         })
 }
 
+pub fn cert_is_pqc_only(cert: &Cert) -> bool {
+    let policy = StandardPolicy::new();
+    for key in cert
+        .keys()
+        .with_policy(&policy, None)
+        .alive()
+        .revoked(false)
+    {
+        let algo = key.key().pk_algo();
+        let version = key.key().version();
+        if is_pqc_sign_algo(algo) {
+            if !pqc_sign_key_version_ok(version) {
+                return false;
+            }
+        } else if is_pqc_kem_algo(algo) {
+            if !pqc_kem_key_version_ok(algo, version) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
 pub fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), PolicyError> {
     let pile = PacketPile::from_bytes(bytes)
         .map_err(|err| PolicyError::Parse(format!("parse output failed: {err}")))?;

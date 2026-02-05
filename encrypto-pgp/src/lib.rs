@@ -4,9 +4,9 @@ use encrypto_core::{
     SignRequest, UserId, VerifyRequest, VerifyResult,
 };
 use encrypto_policy::{
-    cert_has_pqc_encryption_key, cert_has_pqc_signing_key, ensure_pqc_encryption_output,
-    ensure_pqc_signature_output, is_pqc_kem_algo, is_pqc_sign_algo, pqc_kem_key_version_ok,
-    pqc_sign_key_version_ok,
+    cert_has_pqc_encryption_key, cert_has_pqc_signing_key, cert_is_pqc_only,
+    ensure_pqc_encryption_output, ensure_pqc_signature_output, is_pqc_kem_algo, is_pqc_sign_algo,
+    pqc_kem_key_version_ok, pqc_sign_key_version_ok,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -88,13 +88,19 @@ impl GpgBackend {
         &self.config
     }
 
+    fn ensure_pqc_only_backend(&self) -> Result<(), EncryptoError> {
+        Err(EncryptoError::Backend(
+            "PQC-only build: gpg backend is disabled".to_string(),
+        ))
+    }
+
     fn ensure_pqc_policy(&self, policy: &PqcPolicy) -> Result<(), EncryptoError> {
-        if matches!(policy, PqcPolicy::Required) && !self.supports_pqc() {
-            return Err(EncryptoError::Backend(
-                "PQC required but backend does not support PQC".to_string(),
+        if !matches!(policy, PqcPolicy::Required) {
+            return Err(EncryptoError::InvalidInput(
+                "PQC-only build requires --pqc required".to_string(),
             ));
         }
-        Ok(())
+        self.ensure_pqc_only_backend()
     }
 
     fn build_base_args(&self) -> Result<(Vec<String>, Option<NamedTempFile>), EncryptoError> {
@@ -300,6 +306,7 @@ impl Backend for GpgBackend {
     }
 
     fn list_keys(&self) -> Result<Vec<KeyMeta>, EncryptoError> {
+        self.ensure_pqc_only_backend()?;
         self.list_keys_inner()
     }
 
@@ -332,6 +339,7 @@ impl Backend for GpgBackend {
     }
 
     fn import_key(&self, bytes: &[u8]) -> Result<KeyMeta, EncryptoError> {
+        self.ensure_pqc_only_backend()?;
         let output = self.run_gpg(&["--status-fd", "1", "--import"], Some(bytes))?;
         let status_output = self.output_or_error(output)?;
         if let Some(key_id) = self.import_key_id(&status_output) {
@@ -349,6 +357,7 @@ impl Backend for GpgBackend {
     }
 
     fn export_key(&self, id: &KeyId, secret: bool) -> Result<Vec<u8>, EncryptoError> {
+        self.ensure_pqc_only_backend()?;
         let args = if secret {
             vec!["--export-secret-keys", &id.0]
         } else {
@@ -454,6 +463,17 @@ impl NativeBackend {
         }
     }
 
+    fn ensure_pqc_only(&self, policy: &PqcPolicy) -> Result<(), EncryptoError> {
+        if !matches!(self.pqc_policy, PqcPolicy::Required)
+            || !matches!(policy, PqcPolicy::Required)
+        {
+            return Err(EncryptoError::InvalidInput(
+                "PQC-only build requires PqcPolicy::Required".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     fn ensure_dirs(&self) -> Result<(), EncryptoError> {
         fs::create_dir_all(self.public_dir())
             .map_err(|err| EncryptoError::Io(format!("create dir failed: {err}")))?;
@@ -509,7 +529,14 @@ impl NativeBackend {
                 .map_err(|err| EncryptoError::Backend(format!("parse failed: {err}")))?;
             for cert in openpgp::cert::CertParser::from(ppr) {
                 match cert {
-                    Ok(cert) => certs.push(cert),
+                    Ok(cert) => {
+                        if !cert_is_pqc_only(&cert) {
+                            return Err(EncryptoError::InvalidInput(
+                                "non-PQC key material found; PQC-only build".to_string(),
+                            ));
+                        }
+                        certs.push(cert);
+                    }
                     Err(err) => {
                         return Err(EncryptoError::Backend(format!(
                             "invalid certificate: {err}"
@@ -729,6 +756,7 @@ impl Backend for NativeBackend {
     }
 
     fn list_keys(&self) -> Result<Vec<KeyMeta>, EncryptoError> {
+        self.ensure_pqc_only(&self.pqc_policy)?;
         let mut keys = Vec::new();
         for cert in self.load_all_certs()? {
             keys.push(self.meta_from_cert(&cert));
@@ -737,6 +765,7 @@ impl Backend for NativeBackend {
     }
 
     fn generate_key(&self, params: KeyGenParams) -> Result<KeyMeta, EncryptoError> {
+        self.ensure_pqc_only(&params.pqc_policy)?;
         self.ensure_dirs()?;
 
         if (matches!(params.pqc_policy, PqcPolicy::Required)
@@ -777,6 +806,7 @@ impl Backend for NativeBackend {
     }
 
     fn import_key(&self, bytes: &[u8]) -> Result<KeyMeta, EncryptoError> {
+        self.ensure_pqc_only(&self.pqc_policy)?;
         self.ensure_dirs()?;
 
         let ppr = openpgp::parse::PacketParser::from_bytes(bytes)
@@ -800,6 +830,11 @@ impl Backend for NativeBackend {
         }
 
         for cert in &certs {
+            if !cert_is_pqc_only(cert) {
+                return Err(EncryptoError::InvalidInput(
+                    "non-PQC key material found; PQC-only build".to_string(),
+                ));
+            }
             if cert.is_tsk() {
                 self.store_cert(cert, true)?;
                 self.store_cert(cert, false)?;
@@ -812,6 +847,7 @@ impl Backend for NativeBackend {
     }
 
     fn export_key(&self, id: &KeyId, secret: bool) -> Result<Vec<u8>, EncryptoError> {
+        self.ensure_pqc_only(&self.pqc_policy)?;
         let cert = self.find_cert(id, secret)?;
         if secret && !cert.is_tsk() {
             return Err(EncryptoError::InvalidInput(
@@ -822,13 +858,13 @@ impl Backend for NativeBackend {
     }
 
     fn encrypt(&self, req: EncryptRequest) -> Result<Vec<u8>, EncryptoError> {
+        self.ensure_pqc_only(&req.pqc_policy)?;
         if matches!(req.pqc_policy, PqcPolicy::Required) && !self.supports_pqc() {
             return Err(pqc_required_error());
         }
-        if matches!(req.pqc_policy, PqcPolicy::Required) && req.compat {
+        if req.compat {
             return Err(EncryptoError::InvalidInput(
-                "PQC required is incompatible with compat mode; all recipients must be PQC"
-                    .to_string(),
+                "compat mode is not allowed in a PQC-only build".to_string(),
             ));
         }
 
@@ -948,6 +984,7 @@ impl Backend for NativeBackend {
     }
 
     fn decrypt(&self, req: DecryptRequest) -> Result<Vec<u8>, EncryptoError> {
+        self.ensure_pqc_only(&req.pqc_policy)?;
         if matches!(req.pqc_policy, PqcPolicy::Required) && !self.supports_pqc() {
             return Err(pqc_required_error());
         }
@@ -980,6 +1017,7 @@ impl Backend for NativeBackend {
     }
 
     fn sign(&self, req: SignRequest) -> Result<Vec<u8>, EncryptoError> {
+        self.ensure_pqc_only(&req.pqc_policy)?;
         let cert = self.find_cert(&req.signer, true)?;
         if matches!(req.pqc_policy, PqcPolicy::Required) && !cert_has_pqc_signing_key(&cert) {
             return Err(EncryptoError::InvalidInput(
@@ -1064,6 +1102,7 @@ impl Backend for NativeBackend {
     }
 
     fn verify(&self, req: VerifyRequest) -> Result<VerifyResult, EncryptoError> {
+        self.ensure_pqc_only(&req.pqc_policy)?;
         let require_pqc = matches!(req.pqc_policy, PqcPolicy::Required)
             || matches!(self.pqc_policy, PqcPolicy::Required);
         if require_pqc {
@@ -1086,6 +1125,7 @@ impl Backend for NativeBackend {
     }
 
     fn revoke_key(&self, req: RevokeRequest) -> Result<RevokeResult, EncryptoError> {
+        self.ensure_pqc_only(&self.pqc_policy)?;
         let cert = self.find_cert(&req.key_id, true)?;
         if !cert.is_tsk() {
             return Err(EncryptoError::InvalidInput(
@@ -1135,6 +1175,7 @@ impl Backend for NativeBackend {
     }
 
     fn rotate_key(&self, req: RotateRequest) -> Result<RotateResult, EncryptoError> {
+        self.ensure_pqc_only(&req.pqc_policy)?;
         let cert = self.find_cert(&req.key_id, false)?;
         let user_id = match req.new_user_id {
             Some(uid) => uid,
