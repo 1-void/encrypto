@@ -1,11 +1,7 @@
 [package]
-name = "encrypto-pgp"
+name = "encrypto-policy"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-encrypto-core = { path = "../encrypto-core" }
-encrypto-policy = { path = "../encrypto-policy" }
-tempfile = "3"
-dirs = "5"
 sequoia-openpgp = { version = "2.2.0-pqc.1", default-features = false, features = ["crypto-openssl"] }

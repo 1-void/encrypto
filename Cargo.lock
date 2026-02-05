@@ -420,8 +420,16 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "encrypto-core",
+ "encrypto-policy",
  "sequoia-openpgp",
  "tempfile",
+]
+
+[[package]]
+name = "encrypto-policy"
+version = "0.1.0"
+dependencies = [
+ "sequoia-openpgp",
 ]
 
 [[package]]
