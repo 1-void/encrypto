@@ -8,12 +8,12 @@ fn load_vectors(prefix: &str) -> Vec<Vec<u8>> {
     if let Ok(read_dir) = fs::read_dir(dir) {
         for entry in read_dir.flatten() {
             let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with(prefix) && name.ends_with(".asc") {
-                    if let Ok(bytes) = fs::read(&path) {
-                        entries.push(bytes);
-                    }
-                }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name.starts_with(prefix)
+                && name.ends_with(".asc")
+                && let Ok(bytes) = fs::read(&path)
+            {
+                entries.push(bytes);
             }
         }
     }

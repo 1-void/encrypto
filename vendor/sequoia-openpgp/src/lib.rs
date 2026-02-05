@@ -38,6 +38,10 @@
 //!
 //! [RFC 9580]: https://www.rfc-editor.org/rfc/rfc9580.html
 //! [RFC 4880]: https://tools.ietf.org/html/rfc4880
+
+// Vendored upstream: silence rustc's mismatched lifetime syntax lint
+// introduced in newer toolchains to keep CI noise-free.
+#![allow(mismatched_lifetime_syntaxes)]
 //!
 //! # Experimental Features
 //!

@@ -146,18 +146,17 @@ pub fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), PolicyError> {
                 ));
             }
         }
-        if let Packet::MDC(_) = packet {
+        let tag = packet.tag();
+        if tag == Tag::MDC {
             return Err(PolicyError::Violation(
                 "deprecated MDC packet found".to_string(),
             ));
         }
-        if let Packet::Unknown(unknown) = packet {
-            if matches!(unknown.tag(), Tag::SED | Tag::AED) {
-                return Err(PolicyError::Violation(format!(
-                    "deprecated encrypted packet found: {:?}",
-                    unknown.tag()
-                )));
-            }
+        if matches!(tag, Tag::SED | Tag::AED) {
+            return Err(PolicyError::Violation(format!(
+                "deprecated encrypted packet found: {:?}",
+                tag
+            )));
         }
     }
     if pkesk_count == 0 {
@@ -183,10 +182,10 @@ pub fn ensure_pqc_encryption_has_pqc(bytes: &[u8]) -> Result<(), PolicyError> {
         .map_err(|err| PolicyError::Parse(format!("parse output failed: {err}")))?;
     let mut pqc_count = 0usize;
     for packet in pile.descendants() {
-        if let Packet::PKESK(pkesk) = packet {
-            if is_pqc_kem_algo(pkesk.pk_algo()) {
-                pqc_count += 1;
-            }
+        if let Packet::PKESK(pkesk) = packet
+            && is_pqc_kem_algo(pkesk.pk_algo())
+        {
+            pqc_count += 1;
         }
     }
     if pqc_count == 0 {

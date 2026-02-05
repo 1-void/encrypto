@@ -657,15 +657,15 @@ impl Backend for NativeBackend {
         {
             Ok(decryptor) => decryptor,
             Err(err) => {
-                if self.passphrase.is_none() && has_encrypted_secret {
-                    if err
+                if self.passphrase.is_none()
+                    && has_encrypted_secret
+                    && err
                         .downcast_ref::<openpgp::Error>()
                         .is_some_and(|e| matches!(e, openpgp::Error::MissingSessionKey(_)))
-                    {
-                        return Err(EncryptoError::InvalidInput(
-                            "secret key is encrypted; passphrase required".to_string(),
-                        ));
-                    }
+                {
+                    return Err(EncryptoError::InvalidInput(
+                        "secret key is encrypted; passphrase required".to_string(),
+                    ));
                 }
                 return Err(EncryptoError::Backend(format!("decryptor failed: {err}")));
             }
@@ -1022,13 +1022,13 @@ impl VerificationHelper for NativeHelper {
 fn signer_from_signature_bytes(bytes: &[u8]) -> Option<KeyId> {
     let pile = PacketPile::from_bytes(bytes).ok()?;
     for packet in pile.descendants() {
-        if let Packet::Signature(sig) = packet {
-            if let Some(issuer) = sig.get_issuers().into_iter().next() {
-                return Some(match issuer {
-                    KeyHandle::Fingerprint(fpr) => KeyId(fpr.to_hex()),
-                    KeyHandle::KeyID(id) => KeyId(id.to_hex()),
-                });
-            }
+        if let Packet::Signature(sig) = packet
+            && let Some(issuer) = sig.get_issuers().into_iter().next()
+        {
+            return Some(match issuer {
+                KeyHandle::Fingerprint(fpr) => KeyId(fpr.to_hex()),
+                KeyHandle::KeyID(id) => KeyId(id.to_hex()),
+            });
         }
     }
     None
@@ -1066,10 +1066,10 @@ impl DecryptionHelper for NativeHelper {
                         }
                     }
                     let mut keypair = key.into_keypair()?;
-                    if let Some((algo, sk)) = pkesk.decrypt(&mut keypair, sym_algo) {
-                        if decrypt(algo, &sk) {
-                            return Ok(Some(cert.clone()));
-                        }
+                    if let Some((algo, sk)) = pkesk.decrypt(&mut keypair, sym_algo)
+                        && decrypt(algo, &sk)
+                    {
+                        return Ok(Some(cert.clone()));
                     }
                 }
             }
@@ -1135,8 +1135,7 @@ fn normalize_id(input: &str) -> String {
     input
         .trim()
         .trim_start_matches("0x")
-        .replace(' ', "")
-        .replace('\t', "")
+        .replace([' ', '\t'], "")
         .to_uppercase()
 }
 

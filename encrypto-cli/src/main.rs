@@ -388,10 +388,10 @@ fn main() -> Result<()> {
                         Some(signer) => println!("valid signature from {}", signer.0),
                         None => println!("valid signature"),
                     }
-                    if let Some(path) = output {
-                        if let Some(message) = result.message {
-                            write_output(Some(path), &message)?;
-                        }
+                    if let Some(path) = output
+                        && let Some(message) = result.message
+                    {
+                        write_output(Some(path), &message)?;
                     }
                     Ok(())
                 } else {
@@ -595,8 +595,7 @@ fn normalize_fingerprint(value: &str) -> Result<String> {
     let normalized = value
         .trim()
         .trim_start_matches("0x")
-        .replace(' ', "")
-        .replace('\t', "")
+        .replace([' ', '\t'], "")
         .to_uppercase();
     let len = normalized.len();
     if (len != 40 && len != 64) || !normalized.chars().all(|c| c.is_ascii_hexdigit()) {

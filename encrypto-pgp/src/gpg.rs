@@ -135,12 +135,12 @@ impl GpgBackend {
             .spawn()
             .map_err(|err| EncryptoError::Backend(format!("failed to spawn gpg: {err}")))?;
 
-        if let Some(bytes) = input {
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin
-                    .write_all(bytes)
-                    .map_err(|err| EncryptoError::Io(format!("gpg stdin write failed: {err}")))?;
-            }
+        if let Some(bytes) = input
+            && let Some(mut stdin) = child.stdin.take()
+        {
+            stdin
+                .write_all(bytes)
+                .map_err(|err| EncryptoError::Io(format!("gpg stdin write failed: {err}")))?;
         }
 
         let output = child
@@ -199,12 +199,11 @@ impl GpgBackend {
                     });
                 }
                 "uid" => {
-                    if let Some(ref mut key) = current {
-                        if let Some(uid) = fields.get(9) {
-                            if !uid.is_empty() {
-                                key.user_id = Some(UserId(uid.to_string()));
-                            }
-                        }
+                    if let Some(ref mut key) = current
+                        && let Some(uid) = fields.get(9)
+                        && !uid.is_empty()
+                    {
+                        key.user_id = Some(UserId(uid.to_string()));
                     }
                 }
                 _ => {}
@@ -226,10 +225,10 @@ impl GpgBackend {
             if parts.len() < 2 {
                 continue;
             }
-            if parts.get(1) == Some(&"IMPORT_OK") || parts.get(1) == Some(&"IMPORTED") {
-                if let Some(last) = parts.last() {
-                    key_id = Some((*last).to_string());
-                }
+            if (parts.get(1) == Some(&"IMPORT_OK") || parts.get(1) == Some(&"IMPORTED"))
+                && let Some(last) = parts.last()
+            {
+                key_id = Some((*last).to_string());
             }
         }
         key_id
