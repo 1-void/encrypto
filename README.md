@@ -14,6 +14,11 @@ See `SPEC.md` for the implementation profile and policy details.
 
 Nobody wants to give enough time to build a post quantum pgp. so i did.
 
+## Status
+
+Community preview. PQC-only, unapologetically strict, and still evolving.
+Not yet audited. If you want to help harden it, you’re welcome.
+
 ## Run
 
 Build and run the CLI:
@@ -28,40 +33,40 @@ cargo run -p encrypto-cli -- keygen "Alice <alice@example.com>" --pqc-level high
 
 Generate a PQC key with a passphrase (native backend):
 ```bash
-cargo run -p encrypto-cli -- --native --passphrase-file ./pass.txt keygen "Alice <alice@example.com>"
+cargo run -p encrypto-cli -- --passphrase-file ./pass.txt keygen "Alice <alice@example.com>"
 ```
 
 Keygen requires a passphrase by default (native). Use `--no-passphrase` to override:
 ```bash
-cargo run -p encrypto-cli -- --native --no-passphrase keygen "Alice <alice@example.com>"
+cargo run -p encrypto-cli -- --no-passphrase keygen "Alice <alice@example.com>"
 ```
 
 Post-quantum mode (builds OpenSSL locally, then runs with PQC enabled):
 ```bash
 ./scripts/bootstrap-pqc.sh
 source scripts/pqc-env.sh
-cargo run -p encrypto-cli -- --native info
+cargo run -p encrypto-cli -- info
 ```
 
-GPG-style basics:
+Basics:
 ```bash
-cargo run -p encrypto-cli -- --native encrypt -r <KEY_ID> message.txt -o msg.pgp
-cargo run -p encrypto-cli -- --native decrypt -o message.txt msg.pgp
-cargo run -p encrypto-cli -- --native sign -u <KEY_ID> message.txt -o message.sig
-cargo run -p encrypto-cli -- --native verify message.sig message.txt
+cargo run -p encrypto-cli -- encrypt -r <KEY_ID> message.txt -o msg.pgp
+cargo run -p encrypto-cli -- decrypt -o message.txt msg.pgp
+cargo run -p encrypto-cli -- sign -u <KEY_ID> message.txt -o message.sig
+cargo run -p encrypto-cli -- verify message.sig message.txt
 ```
 
-Passphrase note (native backend): prefer `--passphrase-file` to avoid exposing secrets in process listings.
+Passphrase note: prefer `--passphrase-file` to avoid exposing secrets in process listings.
 
 Key lifecycle:
 ```bash
-cargo run -p encrypto-cli -- --native revoke <KEY_ID> --reason key-superseded --armor -o revoked.asc
-cargo run -p encrypto-cli -- --native rotate <KEY_ID>
+cargo run -p encrypto-cli -- revoke <KEY_ID> --reason key-superseded --armor -o revoked.asc
+cargo run -p encrypto-cli -- rotate <KEY_ID>
 ```
 
 Diagnostics:
 ```bash
-cargo run -p encrypto-cli -- --native doctor
+cargo run -p encrypto-cli -- doctor
 ```
 
 If you need oqs-provider explicitly:
@@ -81,9 +86,19 @@ Keep it simple.
 
 If you change crypto behavior, include a quick end-to-end check:
 ```bash
-cargo run -p encrypto-cli -- --backend native --pqc required info
+cargo run -p encrypto-cli -- info
 ```
 
 Prefer small commits with clear messages.
 
 AI is welcome. If you use AI, make sure your edits are supervised and carefully audited before you open a PR.
+
+See `CONTRIBUTING.md` for the full workflow and `SECURITY.md` for vulnerability reporting.
+
+## Security
+
+Please do not open public issues for security vulnerabilities. Use GitHub Security Advisories or email `root@1-void.com`.
+
+## License
+
+MIT. See `LICENSE`.

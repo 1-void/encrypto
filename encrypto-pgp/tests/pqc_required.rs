@@ -78,8 +78,8 @@ fn assert_pqc_signature(bytes: &[u8]) {
 }
 
 fn generate_classic_cert_bytes(user_id: &str) -> Vec<u8> {
-    use openpgp::cert::prelude::*;
     use openpgp::Profile;
+    use openpgp::cert::prelude::*;
     use sequoia_openpgp as openpgp;
 
     let (cert, _rev) = CertBuilder::general_purpose(Some(user_id))

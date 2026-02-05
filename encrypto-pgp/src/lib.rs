@@ -464,8 +464,7 @@ impl NativeBackend {
     }
 
     fn ensure_pqc_only(&self, policy: &PqcPolicy) -> Result<(), EncryptoError> {
-        if !matches!(self.pqc_policy, PqcPolicy::Required)
-            || !matches!(policy, PqcPolicy::Required)
+        if !matches!(self.pqc_policy, PqcPolicy::Required) || !matches!(policy, PqcPolicy::Required)
         {
             return Err(EncryptoError::InvalidInput(
                 "PQC-only build requires PqcPolicy::Required".to_string(),

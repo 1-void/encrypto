@@ -2,6 +2,11 @@
 name = "encrypto-cli"
 version = "0.1.0"
 edition = "2024"
+authors = ["1-void <root@1-void.com>"]
+license = "MIT"
+repository = "https://github.com/1-void/encrypto"
+homepage = "https://github.com/1-void/encrypto"
+description = "PQC-only OpenPGP CLI"
 
 [dependencies]
 anyhow = "1"

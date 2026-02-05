@@ -4,6 +4,7 @@ Target spec: `draft-ietf-openpgp-pqc-17` (IETF OpenPGP PQC draft).
 
 ## Goals
 - OpenPGP-compatible CLI with PQC by default.
+- PQC-only build with no classical fallback.
 - Fail-closed when PQC is required but unavailable.
 - No silent downgrade to classical cryptography.
 
