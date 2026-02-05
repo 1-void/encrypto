@@ -4,7 +4,7 @@ use encrypto_core::{
 };
 mod common;
 
-use common::set_temp_home;
+use common::{require_pqc, set_temp_home};
 use encrypto_pgp::NativeBackend;
 use sequoia_openpgp::serialize::SerializeInto;
 
@@ -91,8 +91,7 @@ fn generate_classic_cert_bytes(user_id: &str) -> Vec<u8> {
 fn pqc_required_outputs_are_pqc() {
     let _home = set_temp_home();
     let backend = NativeBackend::new(PqcPolicy::Required);
-    if !backend.supports_pqc() {
-        eprintln!("pqc not supported in this environment; skipping");
+    if !require_pqc(backend.supports_pqc()) {
         return;
     }
 
@@ -134,8 +133,7 @@ fn pqc_required_outputs_are_pqc() {
 fn pqc_roundtrip_import_export() {
     let _home = set_temp_home();
     let backend = NativeBackend::new(PqcPolicy::Required);
-    if !backend.supports_pqc() {
-        eprintln!("pqc not supported in this environment; skipping");
+    if !require_pqc(backend.supports_pqc()) {
         return;
     }
 
@@ -159,8 +157,7 @@ fn pqc_roundtrip_import_export() {
 
     let _home2 = set_temp_home();
     let backend2 = NativeBackend::new(PqcPolicy::Required);
-    if !backend2.supports_pqc() {
-        eprintln!("pqc not supported in this environment; skipping");
+    if !require_pqc(backend2.supports_pqc()) {
         return;
     }
     backend2.import_key(&secret).expect("import secret");
@@ -232,8 +229,7 @@ fn non_pqc_import_rejected() {
 fn compat_rejected_when_pqc_required() {
     let _home = set_temp_home();
     let backend = NativeBackend::new(PqcPolicy::Required);
-    if !backend.supports_pqc() {
-        eprintln!("pqc not supported in this environment; skipping");
+    if !require_pqc(backend.supports_pqc()) {
         return;
     }
 
@@ -263,8 +259,7 @@ fn native_passphrase_encrypts_secret_keys() {
     let _home = set_temp_home();
     let passphrase = "correct horse battery staple";
     let backend = NativeBackend::with_passphrase(PqcPolicy::Required, Some(passphrase.to_string()));
-    if !backend.supports_pqc() {
-        eprintln!("pqc not supported in this environment; skipping");
+    if !require_pqc(backend.supports_pqc()) {
         return;
     }
 
@@ -324,8 +319,7 @@ fn native_passphrase_encrypts_secret_keys() {
 fn keygen_requires_passphrase_by_default() {
     let _home = set_temp_home();
     let backend = NativeBackend::new(PqcPolicy::Required);
-    if !backend.supports_pqc() {
-        eprintln!("pqc not supported in this environment; skipping");
+    if !require_pqc(backend.supports_pqc()) {
         return;
     }
 

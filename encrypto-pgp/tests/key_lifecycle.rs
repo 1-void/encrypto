@@ -4,7 +4,7 @@ use encrypto_core::{
 };
 mod common;
 
-use common::set_temp_home;
+use common::{require_pqc, set_temp_home};
 use encrypto_pgp::NativeBackend;
 
 fn assert_revoked(cert_bytes: &[u8]) {
@@ -26,8 +26,7 @@ fn revoke_marks_cert_revoked() {
     let _home = set_temp_home();
     let passphrase = "rotate-pass";
     let backend = NativeBackend::with_passphrase(PqcPolicy::Required, Some(passphrase.to_string()));
-    if !backend.supports_pqc() {
-        eprintln!("pqc not supported in this environment; skipping");
+    if !require_pqc(backend.supports_pqc()) {
         return;
     }
 
@@ -59,8 +58,7 @@ fn rotate_creates_new_key_and_revokes_old() {
     let _home = set_temp_home();
     let passphrase = "rotate-pass";
     let backend = NativeBackend::with_passphrase(PqcPolicy::Required, Some(passphrase.to_string()));
-    if !backend.supports_pqc() {
-        eprintln!("pqc not supported in this environment; skipping");
+    if !require_pqc(backend.supports_pqc()) {
         return;
     }
 

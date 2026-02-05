@@ -36,3 +36,14 @@ pub fn set_temp_home() -> TempHome {
         prev,
     }
 }
+
+pub fn require_pqc(supported: bool) -> bool {
+    if supported {
+        return true;
+    }
+    if std::env::var_os("CI").is_some() {
+        panic!("PQC not available in CI; run scripts/bootstrap-pqc.sh");
+    }
+    eprintln!("pqc not supported in this environment; skipping");
+    false
+}

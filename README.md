@@ -95,6 +95,8 @@ AI is welcome. If you use AI, make sure your edits are supervised and carefully 
 
 See `CONTRIBUTING.md` for the full workflow and `SECURITY.md` for vulnerability reporting.
 
+Note: PQC tests will skip locally if PQC support is missing; CI enforces PQC.
+
 ## Security
 
 Please do not open public issues for security vulnerabilities. Use GitHub Security Advisories or email `root@1-void.com`.
