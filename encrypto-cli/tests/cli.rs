@@ -10,7 +10,11 @@ fn pqc_available() -> bool {
 }
 
 fn pqc_high_available() -> bool {
-    pqc_suite_supported(PqcLevel::High)
+    let supported = pqc_suite_supported(PqcLevel::High);
+    if !supported && std::env::var_os("CI").is_some() {
+        panic!("PQC high suite not available in CI; run scripts/bootstrap-pqc.sh");
+    }
+    supported
 }
 
 fn temp_home() -> PathBuf {
