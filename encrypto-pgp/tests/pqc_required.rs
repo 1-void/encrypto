@@ -2,16 +2,11 @@ use encrypto_core::{
     Backend, DecryptRequest, EncryptRequest, KeyGenParams, PqcLevel, PqcPolicy, SignRequest,
     UserId, VerifyRequest,
 };
+mod common;
+
+use common::set_temp_home;
 use encrypto_pgp::NativeBackend;
 use sequoia_openpgp::serialize::SerializeInto;
-
-fn set_temp_home() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
-    unsafe {
-        std::env::set_var("ENCRYPTO_HOME", dir.path());
-    }
-    dir
-}
 
 fn assert_pqc_encryption(bytes: &[u8]) {
     use openpgp::parse::Parse;

@@ -2,15 +2,10 @@ use encrypto_core::{
     Backend, KeyGenParams, PqcLevel, PqcPolicy, RevocationReason, RevokeRequest, RotateRequest,
     UserId,
 };
-use encrypto_pgp::NativeBackend;
+mod common;
 
-fn set_temp_home() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
-    unsafe {
-        std::env::set_var("ENCRYPTO_HOME", dir.path());
-    }
-    dir
-}
+use common::set_temp_home;
+use encrypto_pgp::NativeBackend;
 
 fn assert_revoked(cert_bytes: &[u8]) {
     use openpgp::parse::Parse;
