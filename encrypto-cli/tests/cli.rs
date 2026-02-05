@@ -483,6 +483,20 @@ fn decrypt_rejects_conflicting_input_args() {
 }
 
 #[test]
+fn decrypt_rejects_empty_input() {
+    if !pqc_available() {
+        return;
+    }
+    let home = temp_home();
+    let (code, _stdout, stderr) = run_cli(&["decrypt"], &home, None);
+    assert_ne!(code, 0, "expected non-zero exit");
+    assert!(
+        stderr.contains("parse output failed") || !stderr.trim().is_empty(),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
 fn verify_rejects_conflicting_input_args() {
     if !pqc_available() {
         return;

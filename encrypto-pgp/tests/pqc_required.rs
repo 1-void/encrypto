@@ -972,3 +972,79 @@ fn export_armor_contains_header() {
         "expected armored public key block"
     );
 }
+
+#[test]
+fn decrypt_rejects_invalid_ciphertext() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+    let err = backend
+        .decrypt(DecryptRequest {
+            ciphertext: b"not an openpgp message".to_vec(),
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect_err("expected parse error");
+    assert!(
+        err.to_string().contains("parse output failed"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn sign_with_wrong_passphrase_fails() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::with_passphrase(PqcPolicy::Required, Some("correct".to_string()));
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Wrong Pass <wrong-pass@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: Some("correct".to_string()),
+            allow_unprotected: false,
+        })
+        .expect("keygen");
+
+    let backend_wrong =
+        NativeBackend::with_passphrase(PqcPolicy::Required, Some("wrong".to_string()));
+    let err = backend_wrong
+        .sign(SignRequest {
+            signer: meta.key_id,
+            message: b"bad passphrase".to_vec(),
+            armor: false,
+            cleartext: false,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect_err("expected passphrase error");
+    assert!(
+        err.to_string().contains("key decrypt failed"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn empty_key_id_rejected() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !require_pqc(backend.supports_pqc()) {
+        return;
+    }
+    let err = backend
+        .sign(SignRequest {
+            signer: KeyId("".to_string()),
+            message: b"empty id".to_vec(),
+            armor: false,
+            cleartext: false,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect_err("expected empty id error");
+    assert!(
+        err.to_string().contains("empty key id"),
+        "unexpected error: {err}"
+    );
+}
