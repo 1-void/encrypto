@@ -32,7 +32,7 @@ struct Cli {
 
     #[arg(
         long = "compat",
-        help = "Allow mixed PQC + classical recipients (dangerous)"
+        help = "Allow mixed PQC + classical recipients (dangerous; not allowed with --pqc required)"
     )]
     compat: bool,
 
@@ -249,6 +249,11 @@ fn main() -> Result<()> {
     if cli.pqc_disabled {
         pqc_policy = PqcPolicy::Disabled;
         eprintln!("warning: PQC disabled; outputs may be vulnerable to quantum attacks");
+    }
+    if cli.compat && matches!(pqc_policy, PqcPolicy::Required) {
+        return Err(anyhow!(
+            "--compat cannot be used with --pqc required; PQC-required mode enforces all-PQC recipients"
+        ));
     }
     if cli.compat {
         eprintln!(

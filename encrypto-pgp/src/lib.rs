@@ -4,9 +4,9 @@ use encrypto_core::{
     SignRequest, UserId, VerifyRequest, VerifyResult,
 };
 use encrypto_policy::{
-    cert_has_pqc_encryption_key, cert_has_pqc_signing_key, ensure_pqc_encryption_has_pqc,
-    ensure_pqc_encryption_output, ensure_pqc_signature_output, is_pqc_kem_algo, is_pqc_sign_algo,
-    pqc_kem_key_version_ok, pqc_sign_key_version_ok,
+    cert_has_pqc_encryption_key, cert_has_pqc_signing_key, ensure_pqc_encryption_output,
+    ensure_pqc_signature_output, is_pqc_kem_algo, is_pqc_sign_algo, pqc_kem_key_version_ok,
+    pqc_sign_key_version_ok,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -825,6 +825,12 @@ impl Backend for NativeBackend {
         if matches!(req.pqc_policy, PqcPolicy::Required) && !self.supports_pqc() {
             return Err(pqc_required_error());
         }
+        if matches!(req.pqc_policy, PqcPolicy::Required) && req.compat {
+            return Err(EncryptoError::InvalidInput(
+                "PQC required is incompatible with compat mode; all recipients must be PQC"
+                    .to_string(),
+            ));
+        }
 
         let mut certs = Vec::new();
         for recipient in &req.recipients {
@@ -832,7 +838,6 @@ impl Backend for NativeBackend {
         }
 
         if matches!(req.pqc_policy, PqcPolicy::Required)
-            && !req.compat
             && !certs.iter().all(cert_has_pqc_encryption_key)
         {
             return Err(EncryptoError::InvalidInput(
@@ -937,11 +942,7 @@ impl Backend for NativeBackend {
             .finalize()
             .map_err(|err| EncryptoError::Backend(format!("finalize failed: {err}")))?;
         if matches!(req.pqc_policy, PqcPolicy::Required) {
-            if req.compat {
-                ensure_pqc_encryption_has_pqc(&sink).map_err(policy_error)?;
-            } else {
-                ensure_pqc_encryption_output(&sink).map_err(policy_error)?;
-            }
+            ensure_pqc_encryption_output(&sink).map_err(policy_error)?;
         }
         Ok(sink)
     }

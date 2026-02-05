@@ -262,6 +262,36 @@ fn classical_encryption_rejected_when_pqc_required() {
 }
 
 #[test]
+fn compat_rejected_when_pqc_required() {
+    let _home = set_temp_home();
+    let backend = NativeBackend::new(PqcPolicy::Required);
+    if !backend.supports_pqc() {
+        eprintln!("pqc not supported in this environment; skipping");
+        return;
+    }
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Compat Reject <compat-reject@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: None,
+            allow_unprotected: true,
+        })
+        .expect("keygen");
+
+    let result = backend.encrypt(EncryptRequest {
+        recipients: vec![meta.key_id],
+        plaintext: b"compat test".to_vec(),
+        armor: false,
+        pqc_policy: PqcPolicy::Required,
+        compat: true,
+    });
+    assert!(result.is_err(), "expected compat to be rejected");
+}
+
+#[test]
 fn native_passphrase_encrypts_secret_keys() {
     let _home = set_temp_home();
     let passphrase = "correct horse battery staple";
