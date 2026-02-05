@@ -26,6 +26,11 @@ Generate a high-assurance PQC key:
 cargo run -p encrypto-cli -- keygen "Alice <alice@example.com>" --pqc-level high
 ```
 
+Generate a PQC key with a passphrase (native backend):
+```bash
+cargo run -p encrypto-cli -- --native --passphrase-file ./pass.txt keygen "Alice <alice@example.com>"
+```
+
 Post-quantum mode (builds OpenSSL locally, then runs with PQC enabled):
 ```bash
 ./scripts/bootstrap-pqc.sh
@@ -40,6 +45,8 @@ cargo run -p encrypto-cli -- --native decrypt -o message.txt msg.pgp
 cargo run -p encrypto-cli -- --native sign -u <KEY_ID> message.txt -o message.sig
 cargo run -p encrypto-cli -- --native verify message.sig message.txt
 ```
+
+Passphrase note (native backend): prefer `--passphrase-file` to avoid exposing secrets in process listings.
 
 Disable PQC (dangerous, for compatibility only):
 ```bash

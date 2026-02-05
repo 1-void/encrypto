@@ -1,12 +1,10 @@
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
 use encrypto_core::{
-    Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, PqcLevel, PqcPolicy,
-    OPENPGP_PQC_DRAFT, SignRequest, UserId, VerifyRequest,
+    Backend, DecryptRequest, EncryptRequest, KeyGenParams, KeyId, OPENPGP_PQC_DRAFT, PqcLevel,
+    PqcPolicy, SignRequest, UserId, VerifyRequest,
 };
-use encrypto_pgp::{
-    pqc_algorithms_supported, GpgBackend, GpgConfig, NativeBackend, PinentryMode,
-};
+use encrypto_pgp::{GpgBackend, GpgConfig, NativeBackend, PinentryMode, pqc_algorithms_supported};
 use std::fs;
 use std::io::{self, Read, Write};
 
@@ -32,7 +30,10 @@ struct Cli {
     #[arg(long = "pqc-disabled", conflicts_with = "pqc")]
     pqc_disabled: bool,
 
-    #[arg(long = "compat", help = "Allow mixed PQC + classical recipients (dangerous)")]
+    #[arg(
+        long = "compat",
+        help = "Allow mixed PQC + classical recipients (dangerous)"
+    )]
     compat: bool,
 
     #[arg(long = "gpg-path", global = true, default_value = "gpg")]
@@ -57,6 +58,12 @@ struct Cli {
 
     #[arg(long = "gpg-batch", global = true)]
     gpg_batch: bool,
+
+    #[arg(long = "passphrase", global = true)]
+    passphrase: Option<String>,
+
+    #[arg(long = "passphrase-file", global = true)]
+    passphrase_file: Option<String>,
 
     #[command(subcommand)]
     cmd: Command,
@@ -198,7 +205,9 @@ fn main() -> Result<()> {
         eprintln!("warning: PQC disabled; outputs may be vulnerable to quantum attacks");
     }
     if cli.compat {
-        eprintln!("warning: --compat allows mixed PQC/classical recipients; PQ confidentiality is reduced");
+        eprintln!(
+            "warning: --compat allows mixed PQC/classical recipients; PQ confidentiality is reduced"
+        );
     }
 
     let mut backend_kind = cli.backend;
@@ -217,6 +226,14 @@ fn main() -> Result<()> {
         eprintln!("warning: both --gpg-passphrase and --gpg-passphrase-file set; using file");
     }
 
+    if cli.passphrase.is_some() {
+        eprintln!("warning: --passphrase can expose secrets in process listings");
+    }
+
+    if cli.passphrase.is_some() && cli.passphrase_file.is_some() {
+        eprintln!("warning: both --passphrase and --passphrase-file set; using file");
+    }
+
     let gpg_config = GpgConfig {
         gpg_path: cli.gpg_path.clone(),
         homedir: cli.gpg_home.clone(),
@@ -230,9 +247,23 @@ fn main() -> Result<()> {
         batch: cli.gpg_batch,
     };
 
+    let mut native_passphrase = if let Some(path) = &cli.passphrase_file {
+        Some(read_passphrase_file(path)?)
+    } else {
+        cli.passphrase.clone()
+    };
+
+    if matches!(backend_kind, BackendKind::Gpg) && native_passphrase.is_some() {
+        eprintln!("warning: --passphrase only applies to the native backend");
+        native_passphrase = None;
+    }
+
     let backend: Box<dyn Backend> = match backend_kind {
         BackendKind::Gpg => Box::new(GpgBackend::new(gpg_config)),
-        BackendKind::Native => Box::new(NativeBackend::new(pqc_policy.clone())),
+        BackendKind::Native => Box::new(NativeBackend::with_passphrase(
+            pqc_policy.clone(),
+            native_passphrase.clone(),
+        )),
     };
 
     if matches!(pqc_policy, PqcPolicy::Required) && !backend.supports_pqc() {
@@ -282,6 +313,7 @@ fn main() -> Result<()> {
                 algo,
                 pqc_policy: pqc_policy.clone(),
                 pqc_level: pqc_level.into(),
+                passphrase: native_passphrase.clone(),
             };
             let meta = backend.generate_key(params)?;
             println!("created key: {}", meta.key_id.0);
@@ -312,17 +344,9 @@ fn main() -> Result<()> {
             let mut all_recipients = recipients;
             all_recipients.extend(to);
             if all_recipients.is_empty() {
-                return Err(anyhow!(
-                    "at least one -r/--recipient (or --to) is required"
-                ));
+                return Err(anyhow!("at least one -r/--recipient (or --to) is required"));
             }
-            let input_path = merge_arg(
-                "input",
-                input,
-                input_file,
-                "--input",
-                "FILE",
-            )?;
+            let input_path = merge_arg("input", input, input_file, "--input", "FILE")?;
             let plaintext = read_input(input_path)?;
             let request = EncryptRequest {
                 recipients: all_recipients.into_iter().map(KeyId).collect(),
@@ -339,13 +363,7 @@ fn main() -> Result<()> {
             output,
             input_file,
         } => {
-            let input_path = merge_arg(
-                "input",
-                input,
-                input_file,
-                "--input",
-                "FILE",
-            )?;
+            let input_path = merge_arg("input", input, input_file, "--input", "FILE")?;
             let ciphertext = read_input(input_path)?;
             let plaintext = backend.decrypt(DecryptRequest {
                 ciphertext,
@@ -360,13 +378,7 @@ fn main() -> Result<()> {
             output,
             input_file,
         } => {
-            let input_path = merge_arg(
-                "input",
-                input,
-                input_file,
-                "--input",
-                "FILE",
-            )?;
+            let input_path = merge_arg("input", input, input_file, "--input", "FILE")?;
             let message = read_input(input_path)?;
             let request = SignRequest {
                 signer: KeyId(key_id),
@@ -422,6 +434,16 @@ fn read_input(path: Option<String>) -> Result<Vec<u8>> {
             Ok(buf)
         }
     }
+}
+
+fn read_passphrase_file(path: &str) -> Result<String> {
+    let bytes = fs::read(path)?;
+    let mut passphrase = String::from_utf8(bytes)
+        .map_err(|err| anyhow!("passphrase file must be valid UTF-8: {err}"))?;
+    while passphrase.ends_with('\n') || passphrase.ends_with('\r') {
+        passphrase.pop();
+    }
+    Ok(passphrase)
 }
 
 fn write_output(path: Option<String>, bytes: &[u8]) -> Result<()> {

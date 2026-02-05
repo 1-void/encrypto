@@ -47,6 +47,7 @@ pub struct KeyGenParams {
     pub algo: Option<String>,
     pub pqc_policy: PqcPolicy,
     pub pqc_level: PqcLevel,
+    pub passphrase: Option<String>,
 }
 
 #[derive(Debug, Clone)]

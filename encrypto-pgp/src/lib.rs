@@ -1,6 +1,6 @@
 use encrypto_core::{
-    Backend, DecryptRequest, EncryptRequest, EncryptoError, KeyGenParams, KeyId, KeyMeta,
-    PqcLevel, PqcPolicy, SignRequest, UserId, VerifyRequest, VerifyResult,
+    Backend, DecryptRequest, EncryptRequest, EncryptoError, KeyGenParams, KeyId, KeyMeta, PqcLevel,
+    PqcPolicy, SignRequest, UserId, VerifyRequest, VerifyResult,
 };
 use encrypto_policy::{
     cert_has_pqc_encryption_key, cert_has_pqc_signing_key, ensure_pqc_encryption_has_pqc,
@@ -18,13 +18,13 @@ use tempfile::NamedTempFile;
 
 use openpgp::armor::{Kind as ArmorKind, Writer as ArmorWriter};
 use openpgp::cert::prelude::*;
-use openpgp::crypto::SessionKey;
+use openpgp::crypto::{Password, SessionKey};
 use openpgp::packet::{PKESK, SKESK};
+use openpgp::parse::Parse;
 use openpgp::parse::stream::{
     DecryptionHelper, DecryptorBuilder, DetachedVerifierBuilder, MessageStructure,
     VerificationHelper,
 };
-use openpgp::parse::Parse;
 use openpgp::policy::StandardPolicy;
 use openpgp::serialize::stream::{Armorer, Encryptor, LiteralWriter, Message, Signer};
 use openpgp::serialize::{Serialize, SerializeInto};
@@ -418,16 +418,26 @@ impl Backend for GpgBackend {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NativeBackend {
     home: PathBuf,
     pqc_policy: PqcPolicy,
+    passphrase: Option<Password>,
 }
 
 impl NativeBackend {
     pub fn new(pqc_policy: PqcPolicy) -> Self {
+        Self::with_passphrase(pqc_policy, None)
+    }
+
+    pub fn with_passphrase(pqc_policy: PqcPolicy, passphrase: Option<String>) -> Self {
         let home = resolve_native_home();
-        Self { home, pqc_policy }
+        let passphrase = passphrase.map(Password::from);
+        Self {
+            home,
+            pqc_policy,
+            passphrase,
+        }
     }
 
     fn ensure_dirs(&self) -> Result<(), EncryptoError> {
@@ -666,6 +676,16 @@ impl NativeBackend {
     }
 }
 
+impl std::fmt::Debug for NativeBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeBackend")
+            .field("home", &self.home)
+            .field("pqc_policy", &self.pqc_policy)
+            .field("passphrase_set", &self.passphrase.is_some())
+            .finish()
+    }
+}
+
 impl Default for NativeBackend {
     fn default() -> Self {
         Self::new(PqcPolicy::Required)
@@ -719,6 +739,13 @@ impl Backend for NativeBackend {
 
         let suite = self.select_cipher_suite(&params)?;
         builder = builder.set_cipher_suite(suite);
+        let password = params
+            .passphrase
+            .map(Password::from)
+            .or_else(|| self.passphrase.clone());
+        if password.is_some() {
+            builder = builder.set_password(password);
+        }
 
         let (cert, _rev) = builder
             .generate()
@@ -800,27 +827,27 @@ impl Backend for NativeBackend {
         for cert in &certs {
             let mut pqc_keys = Vec::new();
             let mut classic_keys = Vec::new();
-        for key in cert
-            .keys()
-            .with_policy(&policy, None)
-            .supported()
-            .alive()
-            .revoked(false)
-            .for_transport_encryption()
-        {
-            let algo = key.key().pk_algo();
-            let version = key.key().version();
-            if is_pqc_kem_algo(algo) && pqc_kem_key_version_ok(algo, version) {
-                pqc_keys.push(key);
-            } else {
-                if is_pqc_kem_algo(algo) && std::env::var_os("ENCRYPTO_DEBUG").is_some() {
-                    eprintln!(
-                        "pqc: ignoring encryption key with unsupported version v{version} ({algo:?})"
-                    );
+            for key in cert
+                .keys()
+                .with_policy(&policy, None)
+                .supported()
+                .alive()
+                .revoked(false)
+                .for_transport_encryption()
+            {
+                let algo = key.key().pk_algo();
+                let version = key.key().version();
+                if is_pqc_kem_algo(algo) && pqc_kem_key_version_ok(algo, version) {
+                    pqc_keys.push(key);
+                } else {
+                    if is_pqc_kem_algo(algo) && std::env::var_os("ENCRYPTO_DEBUG").is_some() {
+                        eprintln!(
+                            "pqc: ignoring encryption key with unsupported version v{version} ({algo:?})"
+                        );
+                    }
+                    classic_keys.push(key);
                 }
-                classic_keys.push(key);
             }
-        }
 
             if req.compat && !matches!(req.pqc_policy, PqcPolicy::Disabled) {
                 if matches!(req.pqc_policy, PqcPolicy::Required) && pqc_keys.is_empty() {
@@ -908,7 +935,12 @@ impl Backend for NativeBackend {
             ensure_pqc_encryption_output(&req.ciphertext).map_err(policy_error)?;
         }
         let certs = self.load_all_certs()?;
-        let helper = NativeHelper::new(certs);
+        let has_encrypted_secret = certs.iter().any(|cert| {
+            cert.keys()
+                .secret()
+                .any(|key| key.key().secret().is_encrypted())
+        });
+        let helper = NativeHelper::new(certs, self.passphrase.clone());
         let p = &StandardPolicy::new();
         let mut decryptor = DecryptorBuilder::from_bytes(&req.ciphertext)
             .map_err(|err| EncryptoError::Backend(format!("parse failed: {err}")))?
@@ -916,9 +948,14 @@ impl Backend for NativeBackend {
             .map_err(|err| EncryptoError::Backend(format!("decryptor failed: {err}")))?;
 
         let mut out = Vec::new();
-        decryptor
-            .read_to_end(&mut out)
-            .map_err(|err| EncryptoError::Io(format!("read failed: {err}")))?;
+        if let Err(err) = decryptor.read_to_end(&mut out) {
+            if self.passphrase.is_none() && has_encrypted_secret {
+                return Err(EncryptoError::InvalidInput(
+                    "secret key is encrypted; passphrase required".to_string(),
+                ));
+            }
+            return Err(EncryptoError::Io(format!("read failed: {err}")));
+        }
         Ok(out)
     }
 
@@ -976,14 +1013,18 @@ impl Backend for NativeBackend {
         let key = candidates
             .pop()
             .ok_or_else(|| EncryptoError::InvalidInput("no signing key found".to_string()))?;
-        if key.key().secret().is_encrypted() {
-            return Err(EncryptoError::InvalidInput(
-                "signing key is encrypted; decrypt it first".to_string(),
-            ));
+        let mut key = key.key().clone();
+        if key.secret().is_encrypted() {
+            let passphrase = self.passphrase.as_ref().ok_or_else(|| {
+                EncryptoError::InvalidInput(
+                    "signing key is encrypted; passphrase required".to_string(),
+                )
+            })?;
+            key = key
+                .decrypt_secret(passphrase)
+                .map_err(|err| EncryptoError::InvalidInput(format!("key decrypt failed: {err}")))?;
         }
         let keypair = key
-            .key()
-            .clone()
             .into_keypair()
             .map_err(|err| EncryptoError::Backend(format!("keypair failed: {err}")))?;
 
@@ -1009,7 +1050,7 @@ impl Backend for NativeBackend {
             ensure_pqc_signature_output(&req.signature).map_err(policy_error)?;
         }
         let certs = self.load_all_certs()?;
-        let helper = NativeHelper::new(certs);
+        let helper = NativeHelper::new(certs, self.passphrase.clone());
         let p = &StandardPolicy::new();
         let mut verifier = DetachedVerifierBuilder::from_bytes(&req.signature)
             .map_err(|err| EncryptoError::Backend(format!("parse failed: {err}")))?
@@ -1027,11 +1068,12 @@ impl Backend for NativeBackend {
 
 struct NativeHelper {
     certs: Vec<Cert>,
+    passphrase: Option<Password>,
 }
 
 impl NativeHelper {
-    fn new(certs: Vec<Cert>) -> Self {
-        Self { certs }
+    fn new(certs: Vec<Cert>, passphrase: Option<Password>) -> Self {
+        Self { certs, passphrase }
     }
 }
 
@@ -1075,10 +1117,18 @@ impl DecryptionHelper for NativeHelper {
                     .revoked(false)
                     .for_transport_encryption()
                 {
-                    if key.key().secret().is_encrypted() {
-                        continue;
+                    let mut key = key.key().clone();
+                    if key.secret().is_encrypted() {
+                        let passphrase = match self.passphrase.as_ref() {
+                            Some(passphrase) => passphrase,
+                            None => continue,
+                        };
+                        match key.decrypt_secret(passphrase) {
+                            Ok(decrypted) => key = decrypted,
+                            Err(_) => continue,
+                        }
                     }
-                    let mut keypair = key.key().clone().into_keypair()?;
+                    let mut keypair = key.into_keypair()?;
                     if let Some((algo, sk)) = pkesk.decrypt(&mut keypair, sym_algo) {
                         if decrypt(algo, &sk) {
                             return Ok(Some(cert.clone()));

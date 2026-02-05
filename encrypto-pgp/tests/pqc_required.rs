@@ -13,10 +13,10 @@ fn set_temp_home() -> tempfile::TempDir {
 }
 
 fn assert_pqc_encryption(bytes: &[u8]) {
-    use sequoia_openpgp as openpgp;
-    use openpgp::{Packet, PacketPile};
     use openpgp::parse::Parse;
     use openpgp::types::PublicKeyAlgorithm;
+    use openpgp::{Packet, PacketPile};
+    use sequoia_openpgp as openpgp;
 
     let pile = PacketPile::from_bytes(bytes).expect("parse encrypted output");
     let mut pkesk_count = 0usize;
@@ -26,8 +26,7 @@ fn assert_pqc_encryption(bytes: &[u8]) {
             assert!(
                 matches!(
                     pkesk.pk_algo(),
-                    PublicKeyAlgorithm::MLKEM768_X25519
-                        | PublicKeyAlgorithm::MLKEM1024_X448
+                    PublicKeyAlgorithm::MLKEM768_X25519 | PublicKeyAlgorithm::MLKEM1024_X448
                 ),
                 "non-PQC recipient packet found: {:?}",
                 pkesk.pk_algo()
@@ -38,10 +37,10 @@ fn assert_pqc_encryption(bytes: &[u8]) {
 }
 
 fn assert_pqc_signature(bytes: &[u8]) {
-    use sequoia_openpgp as openpgp;
-    use openpgp::{Packet, PacketPile};
     use openpgp::parse::Parse;
     use openpgp::types::{HashAlgorithm, PublicKeyAlgorithm};
+    use openpgp::{Packet, PacketPile};
+    use sequoia_openpgp as openpgp;
 
     let pile = PacketPile::from_bytes(bytes).expect("parse signature output");
     let mut sig_count = 0usize;
@@ -92,6 +91,7 @@ fn pqc_required_outputs_are_pqc() {
             algo: None,
             pqc_policy: PqcPolicy::Required,
             pqc_level: PqcLevel::Baseline,
+            passphrase: None,
         })
         .expect("keygen");
 
@@ -133,6 +133,7 @@ fn pqc_roundtrip_import_export() {
             algo: None,
             pqc_policy: PqcPolicy::Required,
             pqc_level: PqcLevel::Baseline,
+            passphrase: None,
         })
         .expect("keygen");
 
@@ -199,6 +200,7 @@ fn classical_signature_rejected_when_pqc_required() {
             algo: None,
             pqc_policy: PqcPolicy::Disabled,
             pqc_level: PqcLevel::Baseline,
+            passphrase: None,
         })
         .expect("keygen");
 
@@ -232,6 +234,7 @@ fn classical_encryption_rejected_when_pqc_required() {
             algo: None,
             pqc_policy: PqcPolicy::Disabled,
             pqc_level: PqcLevel::Baseline,
+            passphrase: None,
         })
         .expect("keygen");
 
@@ -252,4 +255,65 @@ fn classical_encryption_rejected_when_pqc_required() {
         pqc_policy: PqcPolicy::Required,
     });
     assert!(result.is_err(), "expected PQC-required decrypt to fail");
+}
+
+#[test]
+fn native_passphrase_encrypts_secret_keys() {
+    let _home = set_temp_home();
+    let passphrase = "correct horse battery staple";
+    let backend = NativeBackend::with_passphrase(PqcPolicy::Required, Some(passphrase.to_string()));
+    if !backend.supports_pqc() {
+        eprintln!("pqc not supported in this environment; skipping");
+        return;
+    }
+
+    let meta = backend
+        .generate_key(KeyGenParams {
+            user_id: UserId("Passphrase <pw@example.com>".to_string()),
+            algo: None,
+            pqc_policy: PqcPolicy::Required,
+            pqc_level: PqcLevel::Baseline,
+            passphrase: Some(passphrase.to_string()),
+        })
+        .expect("keygen");
+
+    let secret = backend
+        .export_key(&meta.key_id, true)
+        .expect("export secret");
+    {
+        use openpgp::parse::Parse;
+        use sequoia_openpgp as openpgp;
+        let cert = openpgp::Cert::from_bytes(&secret).expect("parse secret cert");
+        let has_encrypted = cert
+            .keys()
+            .secret()
+            .any(|key| key.key().secret().is_encrypted());
+        assert!(has_encrypted, "secret key material should be encrypted");
+    }
+
+    let msg = b"passphrase sign test";
+    let sig = backend
+        .sign(SignRequest {
+            signer: meta.key_id.clone(),
+            message: msg.to_vec(),
+            armor: false,
+            pqc_policy: PqcPolicy::Required,
+        })
+        .expect("sign");
+
+    let result = backend.verify(VerifyRequest {
+        message: msg.to_vec(),
+        signature: sig,
+        pqc_policy: PqcPolicy::Required,
+    });
+    assert!(result.expect("verify").valid, "signature did not verify");
+
+    let backend_no_pass = NativeBackend::new(PqcPolicy::Required);
+    let sign_without = backend_no_pass.sign(SignRequest {
+        signer: meta.key_id,
+        message: msg.to_vec(),
+        armor: false,
+        pqc_policy: PqcPolicy::Required,
+    });
+    assert!(sign_without.is_err(), "expected passphrase error");
 }

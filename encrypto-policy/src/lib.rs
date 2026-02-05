@@ -1,10 +1,10 @@
-use sequoia_openpgp as openpgp;
 use openpgp::Cert;
 use openpgp::Packet;
 use openpgp::PacketPile;
 use openpgp::parse::Parse;
 use openpgp::policy::StandardPolicy;
 use openpgp::types::{HashAlgorithm, PublicKeyAlgorithm};
+use sequoia_openpgp as openpgp;
 
 #[derive(Debug)]
 pub enum PolicyError {
