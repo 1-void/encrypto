@@ -934,6 +934,7 @@ name = "qpgp-pgp"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "libc",
  "qpgp-core",
  "qpgp-policy",
  "sequoia-openpgp",

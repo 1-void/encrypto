@@ -181,9 +181,12 @@ fn relative_home_rejected_without_override() {
 
 #[test]
 fn relative_home_allowed_with_override() {
-    let _home = set_home(std::path::Path::new("relative-home-allow"));
-    let _guard = set_env_var("QPGP_ALLOW_RELATIVE_HOME", "1");
-    let backend = NativeBackend::new(PqcPolicy::Required);
+    // Allowing a relative home is insecure; only used in tests.
+    let backend = NativeBackend::from_home(
+        std::path::Path::new("relative-home-allow").to_path_buf(),
+        PqcPolicy::Required,
+        true,
+    );
     let keys = backend.list_keys().expect("list keys");
     assert!(keys.is_empty(), "expected empty key list");
 }

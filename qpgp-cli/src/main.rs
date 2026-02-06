@@ -8,6 +8,7 @@ use qpgp_core::{
 use qpgp_pgp::{NativeBackend, pqc_algorithms_supported, pqc_suite_supported};
 use std::fs;
 use std::io::{self, Read, Write};
+use std::process::Command as ProcessCommand;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -21,6 +22,12 @@ struct Cli {
 
     #[arg(long = "passphrase-file", global = true)]
     passphrase_file: Option<String>,
+
+    #[arg(long = "allow-unsafe-passphrase", global = true)]
+    allow_unsafe_passphrase: bool,
+
+    #[arg(long = "allow-insecure-home", global = true)]
+    allow_insecure_home: bool,
 
     #[command(subcommand)]
     cmd: Command,
@@ -177,8 +184,14 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let pqc_policy = PqcPolicy::Required;
 
+    if cli.passphrase.is_some() && !cli.allow_unsafe_passphrase {
+        return Err(anyhow!(
+            "--passphrase is unsafe (leaks via shell history / process listings); use --passphrase-file, or pass --allow-unsafe-passphrase to proceed"
+        ));
+    }
+
     if cli.passphrase.is_some() {
-        eprintln!("warning: --passphrase can expose secrets in process listings");
+        eprintln!("warning: --passphrase can expose secrets in process listings (allowed)");
     }
 
     if cli.passphrase.is_some() && cli.passphrase_file.is_some() {
@@ -191,9 +204,10 @@ fn main() -> Result<()> {
         cli.passphrase.clone()
     };
 
-    let backend: Box<dyn Backend> = Box::new(NativeBackend::with_passphrase(
+    let backend: Box<dyn Backend> = Box::new(NativeBackend::with_passphrase_allow_insecure_home(
         pqc_policy.clone(),
         native_passphrase.clone(),
+        cli.allow_insecure_home,
     ));
 
     if matches!(pqc_policy, PqcPolicy::Required) && !backend.supports_pqc() {
@@ -230,6 +244,29 @@ fn main() -> Result<()> {
                     return Err(anyhow!(
                         "PQC suites missing: baseline={baseline}, high={high}. Run scripts/bootstrap-pqc.sh"
                     ));
+                }
+
+                // Best-effort build manifest to help debugging provider-loading issues.
+                let openssl_bin = std::env::var("OPENSSL_DIR")
+                    .ok()
+                    .map(|d| std::path::Path::new(&d).join("bin/openssl"))
+                    .filter(|p| p.exists());
+                let bin = openssl_bin
+                    .as_ref()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or("openssl");
+                if let Ok(out) = ProcessCommand::new(bin).args(["version", "-a"]).output() {
+                    let text = String::from_utf8_lossy(&out.stdout);
+                    if let Some(first) = text.lines().next() {
+                        println!("openssl: {first}");
+                    }
+                }
+                if let Ok(out) = ProcessCommand::new(bin).args(["list", "-providers"]).output() {
+                    let text = String::from_utf8_lossy(&out.stdout);
+                    let providers = text.lines().take(12).collect::<Vec<_>>().join("\n");
+                    if !providers.trim().is_empty() {
+                        println!("openssl providers:\n{providers}");
+                    }
                 }
             }
             print_env("QPGP_HOME");

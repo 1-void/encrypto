@@ -25,6 +25,12 @@ fn temp_home() -> PathBuf {
         .as_nanos();
     dir.push(format!("qpgp-cli-test-{nanos}"));
     std::fs::create_dir_all(&dir).expect("create temp dir");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .expect("chmod temp home");
+    }
     dir
 }
 

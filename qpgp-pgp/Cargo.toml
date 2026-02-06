@@ -13,4 +13,5 @@ qpgp-core = { path = "../qpgp-core" }
 qpgp-policy = { path = "../qpgp-policy" }
 tempfile = "3"
 dirs = "5"
+libc = "0.2"
 sequoia-openpgp = { version = "2.2.0-pqc.1", default-features = false, features = ["crypto-openssl"] }

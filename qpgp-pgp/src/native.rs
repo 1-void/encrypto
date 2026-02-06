@@ -37,6 +37,7 @@ pub struct NativeBackend {
     home: PathBuf,
     pqc_policy: PqcPolicy,
     passphrase: Option<Password>,
+    allow_insecure_home: bool,
 }
 
 impl NativeBackend {
@@ -45,12 +46,30 @@ impl NativeBackend {
     }
 
     pub fn with_passphrase(pqc_policy: PqcPolicy, passphrase: Option<String>) -> Self {
+        Self::with_passphrase_allow_insecure_home(pqc_policy, passphrase, false)
+    }
+
+    pub fn with_passphrase_allow_insecure_home(
+        pqc_policy: PqcPolicy,
+        passphrase: Option<String>,
+        allow_insecure_home: bool,
+    ) -> Self {
         let home = resolve_native_home();
         let passphrase = passphrase.map(Password::from);
         Self {
             home,
             pqc_policy,
             passphrase,
+            allow_insecure_home,
+        }
+    }
+
+    pub fn from_home(home: PathBuf, pqc_policy: PqcPolicy, allow_insecure_home: bool) -> Self {
+        Self {
+            home,
+            pqc_policy,
+            passphrase: None,
+            allow_insecure_home,
         }
     }
 
@@ -68,21 +87,108 @@ impl NativeBackend {
         if self.home.is_absolute() {
             return Ok(());
         }
-        if std::env::var_os("QPGP_ALLOW_RELATIVE_HOME").is_some() {
+        if self.allow_insecure_home {
             return Ok(());
         }
         Err(QpgpError::InvalidInput(
-            "QPGP_HOME must be an absolute path (set QPGP_ALLOW_RELATIVE_HOME=1 to override)"
+            "QPGP_HOME must be an absolute path (use qpgp-cli --allow-insecure-home to override)"
                 .to_string(),
         ))
     }
 
-    fn ensure_dirs(&self) -> Result<(), QpgpError> {
+    #[cfg(unix)]
+    fn ensure_secure_dir(&self, path: &Path, what: &str, require_private: bool) -> Result<(), QpgpError> {
+        use std::os::unix::fs::MetadataExt;
+
+        let meta = fs::symlink_metadata(path)
+            .map_err(|err| QpgpError::Io(format!("stat failed: {err}")))?;
+        if meta.file_type().is_symlink() {
+            return Err(QpgpError::InvalidInput(format!(
+                "{what} must not be a symlink: {}",
+                path.display()
+            )));
+        }
+        if !meta.is_dir() {
+            return Err(QpgpError::InvalidInput(format!(
+                "{what} is not a directory: {}",
+                path.display()
+            )));
+        }
+        let uid = meta.uid();
+        let euid = unsafe { libc::geteuid() };
+        if uid != euid {
+            return Err(QpgpError::InvalidInput(format!(
+                "{what} must be owned by the current user (uid {euid}): {}",
+                path.display()
+            )));
+        }
+
+        // Require no group/world write bits. For private dirs, also require
+        // no group/world read/exec bits (i.e., 0700).
+        let mode = meta.mode() & 0o777;
+        if (mode & 0o022) != 0 {
+            return Err(QpgpError::InvalidInput(format!(
+                "{what} must not be group/world-writable (mode {:o}): {}",
+                mode,
+                path.display()
+            )));
+        }
+        if require_private && (mode & 0o077) != 0 {
+            return Err(QpgpError::InvalidInput(format!(
+                "{what} must be private (mode 0700, got {:o}): {}",
+                mode,
+                path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn ensure_home_secure_if_exists(&self) -> Result<(), QpgpError> {
         self.ensure_absolute_home()?;
+        if !self.home.exists() {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        {
+            // Home must not be writable by other users, but we don't require it to be
+            // fully private. The secret dir carries the strict 0700 requirement.
+            self.ensure_secure_dir(&self.home, "QPGP_HOME", false)?;
+            let public = self.public_dir();
+            if public.exists() {
+                // Public certs can be world-readable, but not writable.
+                self.ensure_secure_dir(&public, "QPGP public dir", false)?;
+            }
+            let secret = self.secret_dir();
+            if secret.exists() {
+                self.ensure_secure_dir(&secret, "QPGP secret dir", true)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_dirs(&self) -> Result<(), QpgpError> {
+        self.ensure_home_secure_if_exists()?;
+        fs::create_dir_all(&self.home)
+            .map_err(|err| QpgpError::Io(format!("create dir failed: {err}")))?;
         fs::create_dir_all(self.public_dir())
             .map_err(|err| QpgpError::Io(format!("create dir failed: {err}")))?;
         fs::create_dir_all(self.secret_dir())
             .map_err(|err| QpgpError::Io(format!("create dir failed: {err}")))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&self.home, fs::Permissions::from_mode(0o700))
+                .map_err(|err| QpgpError::Io(format!("chmod failed: {err}")))?;
+            fs::set_permissions(self.public_dir().as_path(), fs::Permissions::from_mode(0o700))
+                .map_err(|err| QpgpError::Io(format!("chmod failed: {err}")))?;
+            fs::set_permissions(self.secret_dir().as_path(), fs::Permissions::from_mode(0o700))
+                .map_err(|err| QpgpError::Io(format!("chmod failed: {err}")))?;
+
+            // Re-check, and reject if anything is still insecure (ownership, symlinks, etc).
+            self.ensure_secure_dir(&self.home, "QPGP_HOME", true)?;
+            self.ensure_secure_dir(&self.public_dir(), "QPGP public dir", true)?;
+            self.ensure_secure_dir(&self.secret_dir(), "QPGP secret dir", true)?;
+        }
         Ok(())
     }
 
@@ -95,7 +201,7 @@ impl NativeBackend {
     }
 
     fn load_all_certs(&self) -> Result<Vec<Cert>, QpgpError> {
-        self.ensure_absolute_home()?;
+        self.ensure_home_secure_if_exists()?;
         let mut certs: HashMap<String, Cert> = HashMap::new();
         for cert in self.load_certs_from_dir(&self.secret_dir())? {
             certs.insert(cert.fingerprint().to_hex(), cert);
@@ -118,7 +224,7 @@ impl NativeBackend {
     }
 
     fn load_secret_certs(&self) -> Result<Vec<Cert>, QpgpError> {
-        self.ensure_absolute_home()?;
+        self.ensure_home_secure_if_exists()?;
         self.load_certs_from_dir(&self.secret_dir())
     }
 
@@ -282,18 +388,18 @@ impl NativeBackend {
         ) || matches!(self.pqc_policy, PqcPolicy::Preferred | PqcPolicy::Required);
 
         if prefer_pqc {
-            let suite = match params.pqc_level {
-                PqcLevel::Baseline => CipherSuite::MLDSA65_Ed25519,
-                PqcLevel::High => CipherSuite::MLDSA87_Ed448,
+            let (requested, fallback) = match params.pqc_level {
+                PqcLevel::Baseline => (CipherSuite::MLDSA65_Ed25519, None),
+                PqcLevel::High => (CipherSuite::MLDSA87_Ed448, Some(CipherSuite::MLDSA65_Ed25519)),
             };
-            if pqc_available_for_suite(suite) {
-                return Ok(suite);
+            if pqc_available_for_suite(requested) {
+                return Ok(requested);
             }
-            if matches!(params.pqc_level, PqcLevel::High) {
-                return Err(QpgpError::InvalidInput(
-                    "PQC high suite not available; install OpenSSL 3.5+ with PQC support"
-                        .to_string(),
-                ));
+            if let Some(fallback) = fallback
+                && pqc_available_for_suite(fallback)
+            {
+                // Align with SPEC.md: if High isn't supported, fall back to Baseline.
+                return Ok(fallback);
             }
             if matches!(params.pqc_policy, PqcPolicy::Required)
                 || matches!(self.pqc_policy, PqcPolicy::Required)
@@ -619,6 +725,7 @@ impl Backend for NativeBackend {
 
         let message = Encryptor::for_recipients(message, recipients)
             .aead_algo(AEADAlgorithm::default())
+            .symmetric_algo(SymmetricAlgorithm::AES256)
             .build()
             .map_err(|err| QpgpError::Backend(format!("encryptor failed: {err}")))?;
         let mut message = LiteralWriter::new(message)
@@ -1186,21 +1293,24 @@ fn ensure_cert_signatures_pqc(cert: &Cert) -> Result<(), QpgpError> {
             "certificate contains invalid signatures".to_string(),
         ));
     }
-    for sig in cert.primary_key().signatures() {
+    // Only require PQC algorithms for self-signatures / bindings.
+    // Third-party certifications are treated as non-PQ-secure metadata
+    // and are not used by QPGP's fingerprint-pinning trust model.
+    for sig in cert.primary_key().self_signatures() {
         ensure_signature_pqc(sig)?;
     }
     for uid in cert.userids() {
-        for sig in uid.signatures() {
+        for sig in uid.self_signatures() {
             ensure_signature_pqc(sig)?;
         }
     }
     for attr in cert.user_attributes() {
-        for sig in attr.signatures() {
+        for sig in attr.self_signatures() {
             ensure_signature_pqc(sig)?;
         }
     }
     for key in cert.keys() {
-        for sig in key.signatures() {
+        for sig in key.self_signatures() {
             ensure_signature_pqc(sig)?;
         }
     }
@@ -1255,6 +1365,16 @@ fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<(), QpgpError> {
         .map_err(|err| QpgpError::Io(format!("sync failed: {err}")))?;
     temp.persist(path)
         .map_err(|err| QpgpError::Io(format!("persist failed: {err}")))?;
+    #[cfg(unix)]
+    {
+        // Ensure the directory entry is durable too (rename is not guaranteed
+        // to be persisted without syncing the containing directory).
+        let dirfd = fs::File::open(dir)
+            .map_err(|err| QpgpError::Io(format!("open dir failed: {err}")))?;
+        dirfd
+            .sync_all()
+            .map_err(|err| QpgpError::Io(format!("sync dir failed: {err}")))?;
+    }
     Ok(())
 }
 

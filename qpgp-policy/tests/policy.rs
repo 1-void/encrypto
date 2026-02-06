@@ -9,7 +9,9 @@ use sequoia_openpgp::KeyHandle;
 use sequoia_openpgp::cert::prelude::*;
 use sequoia_openpgp::policy::StandardPolicy;
 use sequoia_openpgp::serialize::stream::{Encryptor, LiteralWriter, Message, Recipient, Signer};
-use sequoia_openpgp::types::{AEADAlgorithm, Features, HashAlgorithm, PublicKeyAlgorithm};
+use sequoia_openpgp::types::{
+    AEADAlgorithm, Features, HashAlgorithm, PublicKeyAlgorithm, SymmetricAlgorithm,
+};
 use std::io::Write;
 
 #[test]
@@ -89,7 +91,8 @@ fn encrypt_with_features(
 
     let mut sink = Vec::new();
     let message = Message::new(&mut sink);
-    let mut encryptor = Encryptor::for_recipients(message, recipients);
+    let mut encryptor = Encryptor::for_recipients(message, recipients)
+        .symmetric_algo(SymmetricAlgorithm::AES256);
     if force_aead {
         encryptor = encryptor.aead_algo(AEADAlgorithm::default());
     }

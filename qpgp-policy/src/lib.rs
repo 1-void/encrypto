@@ -5,6 +5,7 @@ use openpgp::packet::Tag;
 use openpgp::parse::Parse;
 use openpgp::policy::StandardPolicy;
 use openpgp::types::{HashAlgorithm, PublicKeyAlgorithm};
+use openpgp::types::{AEADAlgorithm, SymmetricAlgorithm};
 use sequoia_openpgp as openpgp;
 
 #[derive(Debug)]
@@ -96,13 +97,9 @@ pub fn cert_has_pqc_signing_key(cert: &Cert) -> bool {
 }
 
 pub fn cert_is_pqc_only(cert: &Cert) -> bool {
-    let policy = StandardPolicy::new();
-    for key in cert
-        .keys()
-        .with_policy(&policy, None)
-        .alive()
-        .revoked(false)
-    {
+    // Strong guarantee: no non-PQC key material exists anywhere in the cert,
+    // even if some keys are expired or revoked.
+    for key in cert.keys() {
         let algo = key.key().pk_algo();
         let version = key.key().version();
         if is_pqc_sign_algo(algo) {
@@ -124,11 +121,15 @@ pub fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), PolicyError> {
     let pile = PacketPile::from_bytes(bytes)
         .map_err(|err| PolicyError::Parse(format!("parse output failed: {err}")))?;
     let mut pkesk_count = 0usize;
+    let mut pkesk_v3 = 0usize;
     let mut seip_count = 0usize;
     let mut seip_v2_count = 0usize;
     for packet in pile.descendants() {
         if let Packet::PKESK(pkesk) = packet {
             pkesk_count += 1;
+            if pkesk.version() == 3 {
+                pkesk_v3 += 1;
+            }
             if !is_pqc_kem_algo(pkesk.pk_algo()) {
                 return Err(PolicyError::Violation(format!(
                     "non-PQC recipient packet found: {:?}",
@@ -138,12 +139,29 @@ pub fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), PolicyError> {
         }
         if let Packet::SEIP(seip) = packet {
             seip_count += 1;
-            if seip.version() == 2 {
-                seip_v2_count += 1;
-            } else {
-                return Err(PolicyError::Violation(
-                    "SEIP v1 is not allowed; require AEAD (SEIP v2)".to_string(),
-                ));
+            match seip {
+                openpgp::packet::SEIP::V2(seip2) => {
+                    seip_v2_count += 1;
+                    if seip2.symmetric_algo() != SymmetricAlgorithm::AES256 {
+                        return Err(PolicyError::Violation(format!(
+                            "SEIP v2 uses non-AES256 cipher: {:?}",
+                            seip2.symmetric_algo()
+                        )));
+                    }
+                    let aead = seip2.aead();
+                    if !matches!(aead, AEADAlgorithm::OCB | AEADAlgorithm::EAX | AEADAlgorithm::GCM)
+                    {
+                        return Err(PolicyError::Violation(format!(
+                            "SEIP v2 uses unsupported AEAD algorithm: {:?}",
+                            aead
+                        )));
+                    }
+                }
+                _ => {
+                    return Err(PolicyError::Violation(
+                        "SEIP v1 is not allowed; require AEAD (SEIP v2)".to_string(),
+                    ));
+                }
             }
         }
         let tag = packet.tag();
@@ -172,6 +190,11 @@ pub fn ensure_pqc_encryption_output(bytes: &[u8]) -> Result<(), PolicyError> {
     if seip_v2_count == 0 {
         return Err(PolicyError::Violation(
             "AEAD is required (SEIP v2 missing)".to_string(),
+        ));
+    }
+    if pkesk_v3 > 0 {
+        return Err(PolicyError::Violation(
+            "PKESK v6 is required when using SEIP v2".to_string(),
         ));
     }
     Ok(())

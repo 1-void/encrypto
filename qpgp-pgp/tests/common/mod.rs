@@ -54,6 +54,12 @@ pub fn set_home(path: &std::path::Path) -> EnvHome {
 pub fn set_temp_home() -> TempHome {
     let lock = ENV_LOCK.lock().expect("env lock poisoned");
     let dir = tempfile::tempdir().expect("tempdir");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("chmod temp home");
+    }
     let prev = std::env::var_os("QPGP_HOME");
     // Safety: tests serialize env changes via ENV_LOCK.
     unsafe {

@@ -68,6 +68,12 @@ clone_or_update() {
   else
     git clone --depth 1 --branch "$ref" "$url" "$dir"
   fi
+  # If an exact commit is provided, prefer checking it out explicitly to
+  # make builds reproducible even if tags move (or if ref is changed).
+  if [[ -n "$commit" ]]; then
+    git -C "$dir" fetch --depth 1 origin "$commit" >/dev/null 2>&1 || true
+    git -C "$dir" checkout -q "$commit"
+  fi
   verify_commit "$dir" "$commit" "$name"
 }
 
@@ -162,6 +168,12 @@ export LD_LIBRARY_PATH="$OPENSSL_PREFIX/$OPENSSL_LIBDIR:$OQS_PREFIX/lib:\${LD_LI
 EOF
 
 echo "==> Done"
+echo "Pinned revisions:"
+echo "  OPENSSL_TAG=$OPENSSL_TAG OPENSSL_COMMIT=$(git -C "$SRC_DIR/openssl" rev-parse HEAD)"
+if [[ "$PQC_WITH_OQS" == "1" ]]; then
+  echo "  LIBOQS_TAG=$LIBOQS_TAG LIBOQS_COMMIT=$(git -C "$SRC_DIR/liboqs" rev-parse HEAD)"
+  echo "  OQSPROVIDER_TAG=$OQSPROVIDER_TAG OQSPROVIDER_COMMIT=$(git -C "$SRC_DIR/oqs-provider" rev-parse HEAD)"
+fi
 echo "Next:"
 echo "  source scripts/pqc-env.sh"
 echo "  cargo run -p qpgp-cli -- info"
