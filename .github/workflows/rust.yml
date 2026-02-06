@@ -34,6 +34,21 @@ jobs:
         cargo build --verbose
         cargo run -p qpgp-cli -- doctor
         cargo test --verbose
+    - name: Generate Build Manifest
+      run: |
+        set -euo pipefail
+        source scripts/pqc-env.sh
+        mkdir -p artifacts
+        cargo metadata --format-version 1 > artifacts/cargo-metadata.json
+        cargo tree > artifacts/cargo-tree.txt
+        "$OPENSSL_DIR/bin/openssl" version -a > artifacts/openssl-version.txt || true
+        "$OPENSSL_DIR/bin/openssl" list -providers > artifacts/openssl-providers.txt || true
+        cargo run -p qpgp-cli -- doctor > artifacts/qpgp-doctor.txt
+    - name: Upload Build Manifest
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-manifest
+        path: artifacts
 
   build-oqs:
     runs-on: ubuntu-latest
@@ -66,6 +81,21 @@ jobs:
         cargo build --verbose
         cargo run -p qpgp-cli -- doctor
         cargo test --verbose
+    - name: Generate Build Manifest (OQS)
+      run: |
+        set -euo pipefail
+        source scripts/pqc-env.sh
+        mkdir -p artifacts
+        cargo metadata --format-version 1 > artifacts/cargo-metadata.json
+        cargo tree > artifacts/cargo-tree.txt
+        "$OPENSSL_DIR/bin/openssl" version -a > artifacts/openssl-version.txt || true
+        "$OPENSSL_DIR/bin/openssl" list -providers > artifacts/openssl-providers.txt || true
+        cargo run -p qpgp-cli -- doctor > artifacts/qpgp-doctor.txt
+    - name: Upload Build Manifest (OQS)
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-manifest-oqs
+        path: artifacts
 
   release:
     needs: build

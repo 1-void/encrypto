@@ -1459,6 +1459,11 @@ fn cleartext_signature_block(bytes: &[u8]) -> Result<Vec<u8>, QpgpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openpgp::armor::{Kind as ArmorKind, Writer as ArmorWriter};
+    use openpgp::parse::stream::VerifierBuilder;
+    use openpgp::serialize::stream::{Message, Signer};
+    use openpgp::Profile;
+    use sequoia_openpgp as openpgp;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
@@ -1543,5 +1548,146 @@ mod tests {
         let bytes = std::fs::read(&path).expect("read signature bytes");
         let signer = signer_from_signature_bytes(&bytes);
         assert!(signer.is_some(), "expected issuer fingerprint in signature");
+    }
+
+    #[test]
+    fn cleartext_verify_rejects_classic_sig_even_if_body_contains_pqc_signature_block() {
+        // This is the regression test for the original cleartext PQC enforcement bug:
+        // the verifier must enforce PQC based on the *verified signature packet*, not
+        // by substring-extracting a "BEGIN PGP SIGNATURE" block from the cleartext body.
+        //
+        // We can't use NativeBackend's keystore here because it intentionally refuses
+        // to load classic certs in a PQC-only build. Instead, we exercise the same
+        // streaming verification path with NativeHelper directly.
+
+        if !pqc_available() {
+            eprintln!("pqc not supported in this environment; skipping");
+            return;
+        }
+
+        // Create a classic signer.
+        let (classic_cert, _) = CertBuilder::general_purpose(Some("Classic <classic@example.com>"))
+            .set_profile(Profile::RFC9580)
+            .expect("profile")
+            .set_cipher_suite(CipherSuite::Cv25519)
+            .generate()
+            .expect("classic keygen");
+        let policy = StandardPolicy::new();
+        let classic_signing_key = classic_cert
+            .keys()
+            .secret()
+            .with_policy(&policy, None)
+            .supported()
+            .alive()
+            .revoked(false)
+            .for_signing()
+            .next()
+            .expect("classic signing key");
+        let classic_keypair = classic_signing_key
+            .key()
+            .clone()
+            .into_keypair()
+            .expect("classic keypair");
+
+        // Create a PQC detached signature and armor it so it looks like a signature block.
+        let (pqc_cert, _) = CertBuilder::general_purpose(Some("PQC <pqc@example.com>"))
+            .set_profile(Profile::RFC9580)
+            .expect("profile")
+            .set_cipher_suite(CipherSuite::MLDSA65_Ed25519)
+            .generate()
+            .expect("pqc keygen");
+        let pqc_signing_key = pqc_cert
+            .keys()
+            .secret()
+            .with_policy(&policy, None)
+            .supported()
+            .alive()
+            .revoked(false)
+            .for_signing()
+            .next()
+            .expect("pqc signing key");
+        let pqc_keypair = pqc_signing_key.key().clone().into_keypair().expect("pqc keypair");
+
+        let mut pqc_sig = Vec::new();
+        {
+            let message = Message::new(&mut pqc_sig);
+            let mut signer = Signer::new(message, pqc_keypair)
+                .expect("signer")
+                .detached()
+                .build()
+                .expect("signer build");
+            signer.write_all(b"pqc sig payload").expect("write");
+            signer.finalize().expect("finalize");
+        }
+
+        // Ensure the embedded signature block itself is PQC-compliant.
+        let mut aw = ArmorWriter::new(Vec::new(), ArmorKind::Signature).expect("armor writer");
+        aw.write_all(&pqc_sig).expect("armor write");
+        let embedded_pqc_block = aw.finalize().expect("armor finalize");
+        ensure_pqc_signature_output(&embedded_pqc_block).expect("embedded block should be PQC");
+
+        // Build a cleartext-signed message where the *body* contains a PQC signature block,
+        // but the *actual* cleartext signature is classic.
+        let mut signed = Vec::new();
+        {
+            let message = Message::new(&mut signed);
+            let mut signer = Signer::new(message, classic_keypair)
+                .expect("signer")
+                .cleartext()
+                .build()
+                .expect("cleartext build");
+
+            signer
+                .write_all(b"hello\n")
+                .expect("write 1");
+            signer
+                .write_all(b"note: embedded signature block below (should not be trusted):\n")
+                .expect("write 2");
+            // This begins with '-', so the cleartext signer will dash-escape it, leaving the
+            // substring \"-----BEGIN PGP SIGNATURE-----\" in the cleartext body.
+            signer
+                .write_all(&embedded_pqc_block)
+                .expect("write embedded block");
+            signer
+                .write_all(b"\nworld\n")
+                .expect("write 3");
+            signer.finalize().expect("finalize");
+        }
+
+        let signed_text = String::from_utf8_lossy(&signed);
+        assert!(
+            signed_text.contains("- -----BEGIN PGP SIGNATURE-----"),
+            "expected embedded signature armor to be dash-escaped into the cleartext body"
+        );
+        assert!(
+            signed_text.contains("\n-----BEGIN PGP SIGNATURE-----"),
+            "expected real cleartext signature block at end"
+        );
+
+        // Verify with the classic cert available.
+        let helper = NativeHelper::new(vec![classic_cert], None);
+        let p = &StandardPolicy::new();
+        let mut verifier = VerifierBuilder::from_bytes(&signed)
+            .expect("parse clearsign")
+            .with_policy(p, None, helper)
+            .expect("verifier");
+        let mut content = Vec::new();
+        let read_ok = verifier.read_to_end(&mut content).is_ok();
+        let helper = verifier.into_helper();
+        assert!(read_ok && helper.valid_signature(), "expected classic signature to verify");
+
+        // PQC enforcement must fail: the verified signature is classic (Ed25519).
+        assert!(
+            helper.enforce_pqc_verified_signatures().is_err(),
+            "expected PQC enforcement to reject classic verified signature"
+        );
+
+        // And our signature-block extractor must pick the *real* signature at the end,
+        // not the embedded body block.
+        let extracted = cleartext_signature_block(&signed).expect("extract");
+        assert!(
+            ensure_pqc_signature_output(&extracted).is_err(),
+            "expected extracted (real) signature block to be non-PQC"
+        );
     }
 }
