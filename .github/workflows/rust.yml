@@ -35,6 +35,38 @@ jobs:
         cargo run -p qpgp-cli -- doctor
         cargo test --verbose
 
+  build-oqs:
+    runs-on: ubuntu-latest
+    env:
+      # Exercise the optional OQS provider path in a pinned, reproducible way.
+      PQC_VERIFY: "1"
+      PQC_WITH_OQS: "1"
+
+      OPENSSL_TAG: "openssl-3.5.5"
+      OPENSSL_COMMIT: "67b5686b4419b4cb8caa502711c41815f5279751"
+
+      LIBOQS_TAG: "0.15.0"
+      LIBOQS_COMMIT: "97f6b86b1b6d109cfd43cf276ae39c2e776aed80"
+
+      OQSPROVIDER_TAG: "0.10.0"
+      OQSPROVIDER_COMMIT: "f076e91faab88871ff1973db0287cc6e4b94c4b0"
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Rust components
+      run: rustup component add rustfmt clippy
+    - name: Bootstrap PQC OpenSSL (+ OQS provider)
+      run: ./scripts/bootstrap-pqc.sh
+    - name: Build and test (PQC + OQS provider)
+      run: |
+        set -euo pipefail
+        source scripts/pqc-env.sh
+        cargo fmt --check
+        cargo clippy --workspace --all-targets -- -D warnings
+        cargo build --verbose
+        cargo run -p qpgp-cli -- doctor
+        cargo test --verbose
+
   release:
     needs: build
     runs-on: ubuntu-latest
