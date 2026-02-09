@@ -1,0 +1,11 @@
+[package]
+name = "qpgp-core"
+version = "0.1.0"
+edition = "2024"
+authors = ["1-void <root@1-void.com>"]
+license = "MIT"
+repository = "https://github.com/1-void/QPGP"
+homepage = "https://github.com/1-void/QPGP"
+description = "Core types for the QPGP PQC-only OpenPGP toolchain"
+
+[dependencies]

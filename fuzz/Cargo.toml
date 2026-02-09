@@ -1,0 +1,42 @@
+[package]
+name = "qpgp-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.qpgp-core]
+path = "../qpgp-core"
+
+[dependencies.qpgp-policy]
+path = "../qpgp-policy"
+
+[dependencies.sequoia-openpgp]
+version = "2.2.0-pqc.1"
+default-features = false
+features = ["crypto-openssl"]
+
+[patch.crates-io]
+sequoia-openpgp = { path = "../vendor/sequoia-openpgp" }
+ossl = { path = "../vendor/ossl" }
+
+[[bin]]
+name = "parse_packetpile"
+path = "fuzz_targets/parse_packetpile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy_validate"
+path = "fuzz_targets/policy_validate.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

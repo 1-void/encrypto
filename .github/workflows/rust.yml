@@ -1,0 +1,163 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Supply-chain hardening: pin OpenSSL to an exact commit and require it.
+  # Keep in sync with scripts/bootstrap-pqc.sh defaults / updates.
+  PQC_VERIFY: "1"
+  OPENSSL_TAG: "openssl-3.5.5"
+  OPENSSL_COMMIT: "67b5686b4419b4cb8caa502711c41815f5279751"
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+    - name: Install Rust components
+      run: rustup component add rustfmt clippy
+    - name: Bootstrap PQC OpenSSL
+      run: ./scripts/bootstrap-pqc.sh
+    - name: Sanity-check PQC availability
+      run: |
+        set -euo pipefail
+        source scripts/pqc-env.sh
+        info="$(cargo run -q -p qpgp-cli -- info)"
+        grep -q "pqc supported: true" <<<"$info"
+    - name: Build, fmt, clippy, and test (PQC)
+      run: |
+        set -euo pipefail
+        source scripts/pqc-env.sh
+        cargo fmt --check
+        cargo clippy --workspace --all-targets -- -D warnings
+        cargo build --verbose
+        cargo run -p qpgp-cli -- doctor
+        cargo test --verbose
+    - name: Generate Build Manifest
+      run: |
+        set -euo pipefail
+        source scripts/pqc-env.sh
+        mkdir -p artifacts
+        cargo metadata --format-version 1 > artifacts/cargo-metadata.json
+        cargo tree > artifacts/cargo-tree.txt
+        "$OPENSSL_DIR/bin/openssl" version -a > artifacts/openssl-version.txt || true
+        "$OPENSSL_DIR/bin/openssl" list -providers > artifacts/openssl-providers.txt || true
+        cargo run -p qpgp-cli -- doctor > artifacts/qpgp-doctor.txt
+    - name: Upload Build Manifest
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: build-manifest
+        path: artifacts
+
+  build-oqs:
+    runs-on: ubuntu-latest
+    env:
+      # Exercise the optional OQS provider path in a pinned, reproducible way.
+      PQC_VERIFY: "1"
+      PQC_WITH_OQS: "1"
+
+      OPENSSL_TAG: "openssl-3.5.5"
+      OPENSSL_COMMIT: "67b5686b4419b4cb8caa502711c41815f5279751"
+
+      LIBOQS_TAG: "0.15.0"
+      LIBOQS_COMMIT: "97f6b86b1b6d109cfd43cf276ae39c2e776aed80"
+
+      OQSPROVIDER_TAG: "0.10.0"
+      OQSPROVIDER_COMMIT: "f076e91faab88871ff1973db0287cc6e4b94c4b0"
+
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+    - name: Install Rust components
+      run: rustup component add rustfmt clippy
+    - name: Bootstrap PQC OpenSSL (+ OQS provider)
+      run: ./scripts/bootstrap-pqc.sh
+    - name: Sanity-check PQC availability (OQS)
+      run: |
+        set -euo pipefail
+        source scripts/pqc-env.sh
+        info="$(cargo run -q -p qpgp-cli -- info)"
+        grep -q "pqc supported: true" <<<"$info"
+    - name: Build and test (PQC + OQS provider)
+      run: |
+        set -euo pipefail
+        source scripts/pqc-env.sh
+        cargo fmt --check
+        cargo clippy --workspace --all-targets -- -D warnings
+        cargo build --verbose
+        cargo run -p qpgp-cli -- doctor
+        cargo test --verbose
+    - name: Generate Build Manifest (OQS)
+      run: |
+        set -euo pipefail
+        source scripts/pqc-env.sh
+        mkdir -p artifacts
+        cargo metadata --format-version 1 > artifacts/cargo-metadata.json
+        cargo tree > artifacts/cargo-tree.txt
+        "$OPENSSL_DIR/bin/openssl" version -a > artifacts/openssl-version.txt || true
+        "$OPENSSL_DIR/bin/openssl" list -providers > artifacts/openssl-providers.txt || true
+        cargo run -p qpgp-cli -- doctor > artifacts/qpgp-doctor.txt
+    - name: Upload Build Manifest (OQS)
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: build-manifest-oqs
+        path: artifacts
+
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+    - name: Bootstrap PQC OpenSSL
+      run: ./scripts/bootstrap-pqc.sh
+    - name: Fuzz smoke test
+      run: |
+        set -euo pipefail
+        source scripts/pqc-env.sh
+
+        # Short, bounded runs to catch obvious parser/policy panics early.
+        cargo run -q --manifest-path fuzz/Cargo.toml --bin parse_packetpile -- -runs=2000 -max_total_time=20
+        cargo run -q --manifest-path fuzz/Cargo.toml --bin policy_validate -- -runs=2000 -max_total_time=20
+
+  release:
+    needs: [build, build-oqs, fuzz-smoke]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      with:
+        fetch-depth: 0
+    - name: Determine version
+      id: version
+      run: |
+        set -euo pipefail
+        version=$(awk -F' *= *' '$1=="version"{gsub(/"/,"",$2); print $2; exit}' qpgp-cli/Cargo.toml)
+        if [[ -z "$version" || "$version" == "null" ]]; then
+          echo "failed to resolve version from qpgp-cli" >&2
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+    - name: Create tag and release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+        version="${{ steps.version.outputs.version }}"
+        tag="v${version}"
+        git fetch --tags
+        if git rev-parse "$tag" >/dev/null 2>&1; then
+          echo "tag $tag already exists; skipping release"
+          exit 0
+        fi
+        prerelease=""
+        if [[ "$version" == *-* ]]; then
+          prerelease="--prerelease"
+        fi
+        gh release create "$tag" --generate-notes $prerelease

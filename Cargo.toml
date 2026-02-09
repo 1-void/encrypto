@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+  "qpgp-core",
+  "qpgp-policy",
+  "qpgp-pgp",
+  "qpgp-cli"
+]
+
+[patch.crates-io]
+sequoia-openpgp = { path = "vendor/sequoia-openpgp" }
+ossl = { path = "vendor/ossl" }

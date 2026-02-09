@@ -1,0 +1,4 @@
+.pqc/
+target/
+scripts/pqc-env.sh
+qpgp-pgp/tests/vectors/
